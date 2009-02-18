@@ -78,6 +78,7 @@ int	 pfctl_load_timeout(struct pfctl *, unsigned int, unsigned int);
 int	 pfctl_load_debug(struct pfctl *, unsigned int);
 int	 pfctl_load_logif(struct pfctl *, char *);
 int	 pfctl_load_hostid(struct pfctl *, unsigned int);
+int	 pfctl_load_reassembly(struct pfctl *, u_int32_t);
 int	 pfctl_get_pool(int, struct pf_pool *, u_int32_t, u_int32_t, int,
 	    char *);
 void	 pfctl_print_rule_counters(struct pf_rule *, int);
@@ -310,8 +311,7 @@ pfctl_clear_rules(int dev, int opts, char *anchorname)
 
 	memset(&t, 0, sizeof(t));
 	t.pfrb_type = PFRB_TRANS;
-	if (pfctl_add_trans(&t, PF_RULESET_SCRUB, anchorname) ||
-	    pfctl_add_trans(&t, PF_RULESET_FILTER, anchorname) ||
+	if (pfctl_add_trans(&t, PF_RULESET_FILTER, anchorname) ||
 	    pfctl_trans(dev, &t, DIOCXBEGIN, 0) ||
 	    pfctl_trans(dev, &t, DIOCXCOMMIT, 0))
 		err(1, "pfctl_clear_rules");
@@ -835,7 +835,7 @@ pfctl_show_rules(int dev, char *path, int opts, enum pfctl_show format,
 		}
 		header++;
 	}
-	pr.rule.action = PF_SCRUB;
+	pr.rule.action = PF_PASS;
 	if (ioctl(dev, DIOCGETRULES, &pr)) {
 		warn("DIOCGETRULES");
 		goto error;
@@ -858,7 +858,7 @@ pfctl_show_rules(int dev, char *path, int opts, enum pfctl_show format,
 		}
 
 		if (pfctl_get_pool(dev, &pr.rule.rpool,
-		    nr, pr.ticket, PF_SCRUB, path) != 0)
+		    nr, pr.ticket, PF_PASS, path) != 0)
 			goto error;
 
 		switch (format) {
@@ -1180,7 +1180,8 @@ pfctl_add_rule(struct pfctl *pf, struct pf_rule *r, const char *anchor_call)
 	struct pf_ruleset	*rs;
 	char 			*p;
 
-	rs_num = pf_get_ruleset_number(r->action);
+	rs_num = pf_get_ruleset_number(r->action == PF_MATCH ? PF_PASS :
+	    r->action);
 	if (rs_num == PF_RULESET_MAX)
 		errx(1, "Invalid rule type %d", r->action);
 
@@ -1236,8 +1237,7 @@ pfctl_ruleset_trans(struct pfctl *pf, char *path, struct pf_anchor *a)
 			return (2);
 	}
 	if ((pf->loadopt & PFCTL_FLAG_FILTER) != 0) {
-		if (pfctl_add_trans(pf->trans, PF_RULESET_SCRUB, path) ||
-		    pfctl_add_trans(pf->trans, PF_RULESET_FILTER, path))
+		if (pfctl_add_trans(pf->trans, PF_RULESET_FILTER, path))
 			return (3);
 	}
 	if (pf->loadopt & PFCTL_FLAG_TABLE)
@@ -1469,9 +1469,7 @@ pfctl_rules(int dev, char *filename, int opts, int optimize,
 			goto _error;
 	}
 
-	if ((pf.loadopt & PFCTL_FLAG_FILTER &&
-	    (pfctl_load_ruleset(&pf, path, rs, PF_RULESET_SCRUB, 0))) ||
-	    (pf.loadopt & PFCTL_FLAG_NAT &&
+	if ((pf.loadopt & PFCTL_FLAG_NAT &&
 	    (pfctl_load_ruleset(&pf, path, rs, PF_RULESET_NAT, 0) ||
 	    pfctl_load_ruleset(&pf, path, rs, PF_RULESET_RDR, 0) ||
 	    pfctl_load_ruleset(&pf, path, rs, PF_RULESET_BINAT, 0))) ||
@@ -1635,6 +1633,11 @@ pfctl_load_options(struct pfctl *pf)
 		if (pfctl_load_hostid(pf, pf->hostid))
 			error = 1;
 
+	/* load reassembly settings */
+	if (!(pf->opts & PF_OPT_MERGE) || pf->reass_set)
+		if (pfctl_load_reassembly(pf, pf->reassemble))
+			error = 1;
+
 	return (error);
 }
 
@@ -1720,6 +1723,26 @@ pfctl_load_timeout(struct pfctl *pf, unsigned int timeout, unsigned int seconds)
 		warnx("DIOCSETTIMEOUT");
 		return (1);
 	}
+	return (0);
+}
+
+int
+pfctl_set_reassembly(struct pfctl *pf, int on, int nodf)
+{
+	if ((loadopt & PFCTL_FLAG_OPTION) == 0)
+		return (0);
+
+	pf->reass_set = 1;
+	if (on) {
+		pf->reassemble = PF_REASS_ENABLED;
+		if (nodf)
+			pf->reassemble &= PF_REASS_NODF;
+	}
+
+	if (pf->opts & PF_OPT_VERBOSE)
+		printf("set reassemble %s %s\n", on ? "yes" : "no",
+		    nodf ? "no-df" : "");
+
 	return (0);
 }
 
@@ -1816,6 +1839,16 @@ pfctl_load_hostid(struct pfctl *pf, u_int32_t hostid)
 {
 	if (ioctl(dev, DIOCSETHOSTID, &hostid)) {
 		warnx("DIOCSETHOSTID");
+		return (1);
+	}
+	return (0);
+}
+
+int
+pfctl_load_reassembly(struct pfctl *pf, u_int32_t reassembly)
+{
+	if (ioctl(dev, DIOCSETREASS, &reassembly)) {
+		warnx("DIOCSETREASS");
 		return (1);
 	}
 	return (0);
