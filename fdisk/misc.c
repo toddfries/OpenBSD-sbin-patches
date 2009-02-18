@@ -1,4 +1,4 @@
-/*	$OpenBSD: misc.c,v 1.18 2006/11/08 23:22:26 deraadt Exp $	*/
+/*	$OpenBSD: misc.c,v 1.20 2008/12/01 20:15:35 ray Exp $	*/
 
 /*
  * Copyright (c) 1997 Tobias Weingartner

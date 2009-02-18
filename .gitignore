@@ -1,3 +1,6 @@
 CVS
 obj
 .cvsignore
+.#*
+*.orig
+*.rej

@@ -1,4 +1,4 @@
-/*	$OpenBSD: dhclient.c,v 1.120 2008/06/07 03:22:26 deraadt Exp $	*/
+/*	$OpenBSD: dhclient.c,v 1.123 2009/02/01 12:10:14 miod Exp $	*/
 
 /*
  * Copyright 2004 Henning Brauer <henning@openbsd.org>
@@ -180,9 +180,11 @@ routehandler(void)
 		ifam = (struct ifa_msghdr *)rtm;
 		if (ifam->ifam_index != ifi->index)
 			break;
-		if (findproto((char *)(ifam + 1), ifam->ifam_addrs) != AF_INET)
+		if (findproto((char *)ifam + ifam->ifam_hdrlen,
+		    ifam->ifam_addrs) != AF_INET)
 			break;
-		sa = get_ifa((char *)(ifam + 1), ifam->ifam_addrs);
+		sa = get_ifa((char *)ifam + ifam->ifam_hdrlen,
+		    ifam->ifam_addrs);
 		if (sa == NULL)
 			goto die;
 
@@ -206,7 +208,8 @@ routehandler(void)
 		ifam = (struct ifa_msghdr *)rtm;
 		if (ifam->ifam_index != ifi->index)
 			break;
-		if (findproto((char *)(ifam + 1), ifam->ifam_addrs) != AF_INET)
+		if (findproto((char *)ifam + ifam->ifam_hdrlen,
+		    ifam->ifam_addrs) != AF_INET)
 			break;
 		if (scripttime == 0 || t < scripttime + 10)
 			break;
@@ -256,6 +259,7 @@ main(int argc, char *argv[])
 	int	 ch, fd, quiet = 0, i = 0, pipe_fd[2];
 	extern char *__progname;
 	struct passwd *pw;
+	int rtfilter;
 
 	/* Initially, log errors to stderr as well as to syslogd. */
 	openlog(__progname, LOG_PID | LOG_NDELAY, DHCPD_LOG_FACILITY);
@@ -374,6 +378,15 @@ main(int argc, char *argv[])
 
 	if ((routefd = socket(PF_ROUTE, SOCK_RAW, 0)) == -1)
 		error("socket(PF_ROUTE, SOCK_RAW): %m");
+
+	ROUTE_SETFILTER(rtfilter, RTM_NEWADDR);
+	ROUTE_SETFILTER(rtfilter, RTM_DELADDR);
+	ROUTE_SETFILTER(rtfilter, RTM_IFINFO);
+	ROUTE_SETFILTER(rtfilter, RTM_IFANNOUNCE);
+
+	if (setsockopt(routefd, PF_ROUTE, ROUTE_MSGFILTER,
+	    &rtfilter, sizeof(rtfilter)) == -1)
+		error("setsockopt(ROUTE_MSGFILTER): %m");
 
 	/* set up the interface */
 	discover_interface();

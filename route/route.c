@@ -1,4 +1,4 @@
-/*	$OpenBSD: route.c,v 1.120 2008/09/15 20:12:11 claudio Exp $	*/
+/*	$OpenBSD: route.c,v 1.127 2009/02/03 16:44:15 michele Exp $	*/
 /*	$NetBSD: route.c,v 1.16 1996/04/15 18:27:05 cgd Exp $	*/
 
 /*
@@ -71,7 +71,7 @@ union	sockunion {
 	struct sockaddr_dl	sdl;
 	struct sockaddr_rtlabel	rtlabel;
 	struct sockaddr_mpls	smpls;
-} so_dst, so_gate, so_mask, so_genmask, so_ifa, so_ifp, so_label;
+} so_dst, so_gate, so_mask, so_genmask, so_ifa, so_ifp, so_label, so_src;
 
 typedef union sockunion *sup;
 pid_t	pid;
@@ -79,6 +79,7 @@ int	rtm_addrs, s;
 int	forcehost, forcenet, Fflag, nflag, af, qflag, tflag;
 int	iflag, verbose, aflen = sizeof(struct sockaddr_in);
 int	locking, lockrest, debugonly;
+u_long	mpls_flags = 0;
 u_long	rtm_inits;
 uid_t	uid;
 u_int	tableid = 0;
@@ -274,7 +275,7 @@ flushroutes(int argc, char **argv)
 			print_rtmsg(rtm, rtm->rtm_msglen);
 		if ((rtm->rtm_flags & (RTF_GATEWAY|RTF_STATIC|RTF_LLINFO)) == 0)
 			continue;
-		sa = (struct sockaddr *)(rtm + 1);
+		sa = (struct sockaddr *)(next + rtm->rtm_hdrlen);
 		if (af && sa->sa_family != af)
 			continue;
 		if (sa->sa_family == AF_KEY)
@@ -296,7 +297,8 @@ flushroutes(int argc, char **argv)
 		if (verbose)
 			print_rtmsg(rtm, rlen);
 		else {
-			struct sockaddr *sa = (struct sockaddr *)(rtm + 1);
+			struct sockaddr *sa = (struct sockaddr *)(next +
+			    rtm->rtm_hdrlen);
 			printf("%-20.20s ", rtm->rtm_flags & RTF_HOST ?
 			    routename(sa) : netname(sa, NULL)); /* XXX extract
 								   netmask */
@@ -382,6 +384,15 @@ newroute(int argc, char **argv)
 				af = AF_MPLS;
 				aflen = sizeof(struct sockaddr_mpls);
 				break;
+			case K_MPLSLABEL:
+				if (!--argc)
+					usage(1+*argv);
+				if (af != AF_INET && af != AF_INET6)
+					errx(1, "-mplslabel requires " 
+					    "-inet or -inet6");
+				getmplslabel(*++argv, 0);
+				mpls_flags = MPLS_OP_PUSH;
+				break;
 			case K_IN:
 				if (!--argc)
 					usage(1+*argv);
@@ -393,23 +404,23 @@ newroute(int argc, char **argv)
 				if (!--argc)
 					usage(1+*argv);
 				if (af != AF_MPLS)
-					errx(1, "-out requires -mpls");
+					errx(1, "-in requires -mpls");
 				getmplslabel(*++argv, 0);
 				break;
 			case K_POP:
 				if (af != AF_MPLS)
 					errx(1, "-pop requires -mpls");
-				so_dst.smpls.smpls_operation = MPLS_OP_POP;
+				mpls_flags = MPLS_OP_POP;
 				break;
 			case K_PUSH:
 				if (af != AF_MPLS)
 					errx(1, "-push requires -mpls");
-				so_dst.smpls.smpls_operation = MPLS_OP_PUSH;
+				mpls_flags = MPLS_OP_PUSH;
 				break;
 			case K_SWAP:
 				if (af != AF_MPLS)
 					errx(1, "-swap requires -mpls");
-				so_dst.smpls.smpls_operation = MPLS_OP_SWAP;
+				mpls_flags = MPLS_OP_SWAP;
 				break;
 			case K_IFACE:
 			case K_INTERFACE:
@@ -878,31 +889,23 @@ getmplslabel(char *s, int in)
 {
 	sup su = NULL;
 	const char *errstr;
-	char *ifname;
 	u_int32_t label;
-	u_int16_t ifindex = 0;
-
-	rtm_addrs |= RTA_DST;
-	su = &so_dst;
-	su->sa.sa_len = aflen;
-	su->sa.sa_family = af;
-
-	ifname = strchr(s, SCOPE_DELIMITER);
-	if (ifname) {
-		*ifname++ = '\0';
-		ifindex = if_nametoindex(ifname);
-	}
 
 	label = strtonum(s, 0, 0x000fffff, &errstr);
 	if (errstr)
 		errx(1, "bad label: %s is %s", s, errstr);
 	if (in) {
-		su->smpls.smpls_in_label = htonl(label << MPLS_LABEL_OFFSET);
-		su->smpls.smpls_in_ifindex = ifindex;
+		rtm_addrs |= RTA_DST;
+		su = &so_dst;
+		su->smpls.smpls_label = htonl(label << MPLS_LABEL_OFFSET);
 	} else {
-		su->smpls.smpls_out_label = htonl(label << MPLS_LABEL_OFFSET);
-		su->smpls.smpls_out_ifindex = ifindex;
+		rtm_addrs |= RTA_SRC;
+		su = &so_src;
+		su->smpls.smpls_label = htonl(label << MPLS_LABEL_OFFSET);
 	}
+
+	su->sa.sa_len = sizeof(struct sockaddr_mpls);
+	su->sa.sa_family = AF_MPLS;
 }
 
 int
@@ -1052,6 +1055,8 @@ rtmsg(int cmd, int flags, int fmask, u_short prio)
 	rtm.rtm_inits = rtm_inits;
 	rtm.rtm_tableid = tableid;
 	rtm.rtm_priority = prio;
+	rtm.rtm_mpls = mpls_flags;
+	rtm.rtm_hdrlen = sizeof(rtm);
 
 	if (rtm_addrs & RTA_NETMASK)
 		mask_addr(&so_dst, &so_mask, RTA_DST);
@@ -1062,6 +1067,7 @@ rtmsg(int cmd, int flags, int fmask, u_short prio)
 	NEXTADDR(RTA_IFP, so_ifp);
 	NEXTADDR(RTA_IFA, so_ifa);
 	NEXTADDR(RTA_LABEL, so_label);
+	NEXTADDR(RTA_SRC, so_src);
 	rtm.rtm_msglen = l = cp - (char *)&m_rtmsg;
 	if (verbose)
 		print_rtmsg(&rtm, l);
@@ -1211,14 +1217,14 @@ print_rtmsg(struct rt_msghdr *rtm, int msglen)
 		    get_linkstate(ifm->ifm_data.ifi_type,
 		    ifm->ifm_data.ifi_link_state));
 		bprintf(stdout, ifm->ifm_flags, ifnetflags);
-		pmsg_addrs((char *)(ifm + 1), ifm->ifm_addrs);
+		pmsg_addrs((char *)ifm + ifm->ifm_hdrlen, ifm->ifm_addrs);
 		break;
 	case RTM_NEWADDR:
 	case RTM_DELADDR:
 		ifam = (struct ifa_msghdr *)rtm;
 		printf("metric %d, flags:", ifam->ifam_metric);
 		bprintf(stdout, ifam->ifam_flags, routeflags);
-		pmsg_addrs((char *)(ifam + 1), ifam->ifam_addrs);
+		pmsg_addrs((char *)ifam + ifam->ifam_hdrlen, ifam->ifam_addrs);
 		break;
 	case RTM_IFANNOUNCE:
 		ifan = (struct if_announcemsghdr *)rtm;
@@ -1251,21 +1257,21 @@ char *
 priorityname(u_int8_t prio)
 {
 	switch (prio & RTP_MASK) {
-	case 0:
+	case RTP_NONE:
 		return ("none");
-	case 4:
+	case RTP_CONNECTED:
 		return ("connected");
-	case 8:
+	case RTP_STATIC:
 		return ("static");
-	case 16:
+	case RTP_OSPF:
 		return ("ospf");
-	case 20:
+	case RTP_ISIS:
 		return ("is-is");
-	case 24:
+	case RTP_RIP:
 		return ("rip");
-	case 32:
+	case RTP_BGP:
 		return ("bgp");
-	case 48:
+	case RTP_DEFAULT:
 		return ("default");
 	default:
 		return ("");
@@ -1296,7 +1302,7 @@ print_getmsg(struct rt_msghdr *rtm, int msglen)
 		    strerror(rtm->rtm_errno), rtm->rtm_errno);
 		return;
 	}
-	cp = ((char *)(rtm + 1));
+	cp = ((char *)rtm + rtm->rtm_hdrlen);
 	if (rtm->rtm_addrs)
 		for (i = 1; i; i <<= 1)
 			if (i & rtm->rtm_addrs) {
@@ -1380,7 +1386,7 @@ pmsg_common(struct rt_msghdr *rtm)
 	bprintf(stdout, rtm->rtm_rmx.rmx_locks, metricnames);
 	printf(" inits: ");
 	bprintf(stdout, rtm->rtm_inits, metricnames);
-	pmsg_addrs(((char *)(rtm + 1)), rtm->rtm_addrs);
+	pmsg_addrs(((char *)rtm + rtm->rtm_hdrlen), rtm->rtm_addrs);
 }
 
 void

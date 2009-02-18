@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.138 2008/07/01 14:31:37 bluhm Exp $	*/
+/*	$OpenBSD: parse.y,v 1.144 2009/01/30 14:24:52 bluhm Exp $	*/
 
 /*
  * Copyright (c) 2002, 2003, 2004 Henning Brauer <henning@openbsd.org>
@@ -61,6 +61,7 @@ int		 check_file_secrecy(int, const char *);
 int		 yyparse(void);
 int		 yylex(void);
 int		 yyerror(const char *, ...);
+int		 yywarn(const char *, ...);
 int		 kw_cmp(const void *, const void *);
 int		 lookup(char *);
 int		 lgetc(int);
@@ -152,6 +153,7 @@ struct ipsec_addr_wrap	*host_v6(const char *, int);
 struct ipsec_addr_wrap	*host_v4(const char *, int);
 struct ipsec_addr_wrap	*host_dns(const char *, int);
 struct ipsec_addr_wrap	*host_if(const char *, int);
+struct ipsec_addr_wrap	*host_any(void);
 void			 ifa_load(void);
 int			 ifa_exists(const char *);
 struct ipsec_addr_wrap	*ifa_lookup(const char *ifa_name);
@@ -210,6 +212,7 @@ typedef struct {
 		u_int16_t	 port;
 		struct ipsec_hosts hosts;
 		struct ipsec_hosts peers;
+		struct ipsec_addr_wrap *anyhost;
 		struct ipsec_addr_wrap *singlehost;
 		struct ipsec_addr_wrap *host;
 		struct {
@@ -261,8 +264,9 @@ typedef struct {
 %type	<v.port>		port
 %type	<v.number>		portval
 %type	<v.peers>		peers
+%type	<v.anyhost>		anyhost
 %type	<v.singlehost>		singlehost
-%type	<v.host>		host host_list
+%type	<v.host>		host host_list host_spec
 %type	<v.ids>			ids
 %type	<v.id>			id
 %type	<v.spis>		spispec
@@ -407,12 +411,28 @@ dir		: /* empty */			{ $$ = IPSEC_INOUT; }
 		;
 
 hosts		: FROM host port TO host port		{
+			struct ipsec_addr_wrap *ipa;
+			for (ipa = $5; ipa; ipa = ipa->next) {
+				if (ipa->srcnat) {
+					yyerror("no flow NAT support for"
+					    " destination network: %s", ipa->name);
+					YYERROR;
+				}
+			}
 			$$.src = $2;
 			$$.sport = $3;
 			$$.dst = $5;
 			$$.dport = $6;
 		}
 		| TO host port FROM host port		{
+			struct ipsec_addr_wrap *ipa;
+			for (ipa = $2; ipa; ipa = ipa->next) {
+				if (ipa->srcnat) {
+					yyerror("no flow NAT support for"
+					    " destination network: %s", ipa->name);
+					YYERROR;
+				}
+			}
 			$$.src = $5;
 			$$.sport = $6;
 			$$.dst = $2;
@@ -448,15 +468,15 @@ peers		: /* empty */				{
 			$$.dst = NULL;
 			$$.src = NULL;
 		}
-		| PEER singlehost LOCAL singlehost	{
+		| PEER anyhost LOCAL singlehost		{
 			$$.dst = $2;
 			$$.src = $4;
 		}
-		| LOCAL singlehost PEER singlehost	{
+		| LOCAL singlehost PEER anyhost		{
 			$$.dst = $4;
 			$$.src = $2;
 		}
-		| PEER singlehost			{
+		| PEER anyhost				{
 			$$.dst = $2;
 			$$.src = NULL;
 		}
@@ -465,6 +485,11 @@ peers		: /* empty */				{
 			$$.src = $2;
 		}
 		;
+
+anyhost		: singlehost			{ $$ = $1; }
+		| ANY				{
+			$$ = host_any();
+		}
 
 singlehost	: /* empty */			{ $$ = NULL; }
 		| STRING			{
@@ -491,7 +516,7 @@ host_list	: host				{ $$ = $1; }
 		}
 		;
 
-host		: STRING			{
+host_spec	: STRING			{
 			if (($$ = host($1)) == NULL) {
 				free($1);
 				yyerror("could not parse host specification");
@@ -512,16 +537,19 @@ host		: STRING			{
 			}
 			free(buf);
 		}
-		| ANY				{
-			struct ipsec_addr_wrap	*ipa;
+		;
 
-			ipa = calloc(1, sizeof(struct ipsec_addr_wrap));
-			if (ipa == NULL)
-				err(1, "host: calloc");
-			ipa->af = AF_UNSPEC;
-			ipa->netaddress = 1;
-			ipa->tail = ipa;
-			$$ = ipa;
+host		: host_spec			{ $$ = $1; }
+		| host_spec '(' host_spec ')'   {
+			if ($3->af != $1->af) {
+				yyerror("Flow NAT address family mismatch");
+				YYERROR;
+			}
+			$$ = $1;
+			$$->srcnat = $3;
+		}
+		| ANY				{
+			$$ = host_any();
 		}
 		| '{' host_list '}'		{ $$ = $2; }
 		;
@@ -866,6 +894,19 @@ yyerror(const char *fmt, ...)
 }
 
 int
+yywarn(const char *fmt, ...)
+{
+	va_list		 ap;
+
+	va_start(ap, fmt);
+	fprintf(stderr, "%s: %d: ", file->name, yylval.lineno);
+	vfprintf(stderr, fmt, ap);
+	fprintf(stderr, "\n");
+	va_end(ap);
+	return (0);
+}
+
+int
 kw_cmp(const void *k, const void *e)
 {
 	return (strcmp(k, ((const struct keywords *)e)->k_name));
@@ -1015,11 +1056,13 @@ findeol(void)
 	int	c;
 
 	parsebuf = NULL;
-	pushback_index = 0;
 
 	/* skip to either EOF or the first real EOL */
 	while (1) {
-		c = lgetc(0);
+		if (pushback_index)
+			c = pushback_buffer[--pushback_index];
+		else
+			c = lgetc(0);
 		if (c == '\n') {
 			file->lineno++;
 			break;
@@ -1574,7 +1617,7 @@ host_v4(const char *s, int mask)
 	ipa->tail = ipa;
 
 	set_ipmask(ipa, bits);
-	if (bits != (ipa->af == AF_INET ? 32 : 128))
+	if (strrchr(s, '/') != NULL)
 		ipa->netaddress = 1;
 
 	return (ipa);
@@ -1662,6 +1705,20 @@ host_if(const char *s, int mask)
 	if (ifa_exists(s))
 		ipa = ifa_lookup(s);
 
+	return (ipa);
+}
+
+struct ipsec_addr_wrap *
+host_any(void)
+{
+	struct ipsec_addr_wrap	*ipa;
+
+	ipa = calloc(1, sizeof(struct ipsec_addr_wrap));
+	if (ipa == NULL)
+		err(1, "host_any: calloc");
+	ipa->af = AF_UNSPEC;
+	ipa->netaddress = 1;
+	ipa->tail = ipa;
 	return (ipa);
 }
 
@@ -2410,22 +2467,69 @@ set_rule_peers(struct ipsec_rule *r, struct ipsec_hosts *peers)
 	if (r->peer == NULL) {
 		/* Set peer to remote host.  Must be a host address. */
 		if (r->direction == IPSEC_IN) {
-			if (r->src->netaddress)
-				r->peer = NULL;
-			else
+			if (!r->src->netaddress)
 				r->peer = copyhost(r->src);
 		} else {
-			if (r->dst->netaddress)
-				r->peer = NULL;
-			else
+			if (!r->dst->netaddress)
 				r->peer = copyhost(r->dst);
 		}
 	}
-
 	if (r->type == RULE_FLOW && r->peer == NULL) {
 		yyerror("no peer specified for destination %s",
 		    r->dst->name);
 		return (1);
+	}
+	if (r->peer != NULL && r->peer->af == AF_UNSPEC) {
+		/* If peer has been specified as any, use the default peer. */
+		free(r->peer);
+		r->peer = NULL;
+	}
+	if (r->type == RULE_IKE && r->peer == NULL) {
+		/*
+                 * Check if the default peer is consistent for all
+                 * rules.  Only warn to avoid breaking existing configs.
+		 */
+		static struct ipsec_rule *pdr = NULL;
+
+		if (pdr == NULL) {
+			/* Remember first default peer rule for comparison. */
+			pdr = r;
+		} else {
+			/* The new default peer must create the same config. */
+			if ((pdr->local == NULL && r->local != NULL) ||
+			    (pdr->local != NULL && r->local == NULL) ||
+			    (pdr->local != NULL && r->local != NULL &&
+			    strcmp(pdr->local->name, r->local->name)))
+				yywarn("default peer local mismatch");
+			if (pdr->ikeauth->type != r->ikeauth->type)
+				yywarn("default peer phase 1 auth mismatch");
+			if (pdr->ikeauth->type == IKE_AUTH_PSK &&
+			    r->ikeauth->type == IKE_AUTH_PSK &&
+			    strcmp(pdr->ikeauth->string, r->ikeauth->string))
+				yywarn("default peer psk mismatch");
+			if (pdr->p1ie != r->p1ie)
+				yywarn("default peer phase 1 mode mismatch");
+			/*
+			 * Transforms have ADD insted of SET so they may be
+			 * different and are not checked here.
+			 */
+			if ((pdr->auth->srcid == NULL &&
+			    r->auth->srcid != NULL) ||
+			    (pdr->auth->srcid != NULL &&
+			    r->auth->srcid == NULL) ||
+			    (pdr->auth->srcid != NULL &&
+			    r->auth->srcid != NULL &&
+			    strcmp(pdr->auth->srcid, r->auth->srcid)))
+				yywarn("default peer srcid mismatch");
+			if ((pdr->auth->dstid == NULL &&
+			    r->auth->dstid != NULL) ||
+			    (pdr->auth->dstid != NULL &&
+			    r->auth->dstid == NULL) ||
+			    (pdr->auth->dstid != NULL &&
+			    r->auth->dstid != NULL &&
+			    strcmp(pdr->auth->dstid, r->auth->dstid)))
+				yywarn("default peer dstid mismatch");
+		}
 	}
 	return (0);
 }

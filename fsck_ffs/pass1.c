@@ -1,4 +1,4 @@
-/*	$OpenBSD: pass1.c,v 1.27 2008/06/10 23:10:29 otto Exp $	*/
+/*	$OpenBSD: pass1.c,v 1.30 2008/11/09 15:54:54 chl Exp $	*/
 /*	$NetBSD: pass1.c,v 1.16 1996/09/27 22:45:15 christos Exp $	*/
 
 /*
@@ -34,7 +34,7 @@
 #if 0
 static char sccsid[] = "@(#)pass1.c	8.1 (Berkeley) 6/5/93";
 #else
-static const char rcsid[] = "$OpenBSD: pass1.c,v 1.27 2008/06/10 23:10:29 otto Exp $";
+static const char rcsid[] = "$OpenBSD: pass1.c,v 1.30 2008/11/09 15:54:54 chl Exp $";
 #endif
 #endif /* not lint */
 
@@ -47,6 +47,7 @@ static const char rcsid[] = "$OpenBSD: pass1.c,v 1.27 2008/06/10 23:10:29 otto E
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "fsck.h"
 #include "extern.h"
@@ -121,6 +122,7 @@ static void
 checkinode(ino_t inumber, struct inodesc *idesc)
 {
 	union dinode *dp;
+	off_t kernmaxfilesize;
 	struct zlncnt *zlnp;
 	int ndb, j;
 	mode_t mode;
@@ -153,8 +155,11 @@ checkinode(ino_t inumber, struct inodesc *idesc)
 		return;
 	}
 	lastino = inumber;
-	if (/* DIP(dp, di_size) < 0 || */
-	    DIP(dp, di_size) + sblock.fs_bsize - 1 < DIP(dp, di_size)) {
+	/* This should match the file size limit in ffs_mountfs(). */
+	kernmaxfilesize = FS_KERNMAXFILESIZE(getpagesize(), &sblock);
+	if (DIP(dp, di_size) > kernmaxfilesize ||
+	    DIP(dp, di_size) > sblock.fs_maxfilesize ||
+	    (mode == IFDIR && DIP(dp, di_size) > MAXDIRSIZE)) {
 		if (debug)
 			printf("bad size %llu:",
 			    (unsigned long long)DIP(dp, di_size));

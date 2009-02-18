@@ -1,4 +1,4 @@
-/*	$OpenBSD: editor.c,v 1.171 2008/09/03 11:13:54 jsg Exp $	*/
+/*	$OpenBSD: editor.c,v 1.174 2009/01/11 19:44:57 miod Exp $	*/
 
 /*
  * Copyright (c) 1997-2000 Todd C. Miller <Todd.Miller@courtesan.com>
@@ -17,7 +17,7 @@
  */
 
 #ifndef lint
-static char rcsid[] = "$OpenBSD: editor.c,v 1.171 2008/09/03 11:13:54 jsg Exp $";
+static char rcsid[] = "$OpenBSD: editor.c,v 1.174 2009/01/11 19:44:57 miod Exp $";
 #endif /* not lint */
 
 #include <sys/types.h>
@@ -366,7 +366,7 @@ editor(struct disklabel *lp, int f, char *dev, char *fstabfile)
 				arg = getstring("Filename",
 				    "Name of the file to save label into.",
 				    NULL);
-				if (arg == NULL && *arg == '\0')
+				if (arg == NULL || *arg == '\0')
 					break;
 			}
 			if ((fp = fopen(arg, "w")) == NULL) {
@@ -1344,11 +1344,8 @@ free_chunks(struct disklabel *lp)
 void
 find_bounds(struct disklabel *lp)
 {
-#ifdef DOSLABEL
-	struct partition *pp = &lp->d_partitions[RAW_PART];
-	u_int64_t new_end;
-	int i;
-#endif
+	int has_bounds = 0;
+
 	/* Defaults */
 	/* XXX - reserve a cylinder for hp300? */
 	starting_sector = 0;
@@ -1359,7 +1356,11 @@ find_bounds(struct disklabel *lp)
 	 * If we have an MBR, use values from the OpenBSD partition.
 	 */
 	if (dosdp) {
-	    if (dosdp->dp_typ == DOSPTYP_OPENBSD) {
+		if (dosdp->dp_typ == DOSPTYP_OPENBSD) {
+			struct partition *pp;
+			u_int64_t new_end;
+			int i;
+
 			/* Set start and end based on fdisk partition bounds */
 			starting_sector = letoh32(dosdp->dp_start);
 			ending_sector = starting_sector + letoh32(dosdp->dp_size);
@@ -1386,16 +1387,29 @@ find_bounds(struct disklabel *lp)
 			starting_sector = 63;
 		}
 
+		has_bounds = 1;
+	}
+#endif
+#ifdef DPMELABEL
+	if (dpme_label) {
+		starting_sector = dpme_obsd_start;
+		ending_sector = dpme_obsd_start + dpme_obsd_size;
+		has_bounds = 1;
+	}
+#endif
+
+	if (has_bounds) {
 		printf("Treating sectors %llu-%llu as the OpenBSD portion of the "
 		    "disk.\nYou can use the 'b' command to change this.\n\n",
 		    starting_sector, ending_sector);
-	}
-#elif (NUMBOOT == 1)
-	/* Boot blocks take up the first cylinder */
-	starting_sector = lp->d_secpercyl;
-	printf("Reserving the first data cylinder for boot blocks.\n"
-	    "You can use the 'b' command to change this.\n\n");
+	} else {
+#if (NUMBOOT == 1)
+		/* Boot blocks take up the first cylinder */
+		starting_sector = lp->d_secpercyl;
+		printf("Reserving the first data cylinder for boot blocks.\n"
+		    "You can use the 'b' command to change this.\n\n");
 #endif
+	}
 }
 
 /*
