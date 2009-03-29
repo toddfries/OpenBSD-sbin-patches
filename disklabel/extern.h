@@ -1,4 +1,4 @@
-/*	$OpenBSD: extern.h,v 1.9 2009/03/22 19:01:32 krw Exp $	*/
+/*	$OpenBSD: extern.h,v 1.11 2009/03/29 05:37:13 deraadt Exp $	*/
 
 /*
  * Copyright (c) 2003 Theo de Raadt <deraadt@openbsd.org>
