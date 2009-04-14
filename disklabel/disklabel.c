@@ -1,4 +1,4 @@
-/*	$OpenBSD: disklabel.c,v 1.147 2009/03/31 23:58:36 krw Exp $	*/
+/*	$OpenBSD: disklabel.c,v 1.151 2009/04/12 01:01:24 krw Exp $	*/
 
 /*
  * Copyright (c) 1987, 1993
@@ -39,7 +39,7 @@ static const char copyright[] =
 #endif /* not lint */
 
 #ifndef lint
-static const char rcsid[] = "$OpenBSD: disklabel.c,v 1.147 2009/03/31 23:58:36 krw Exp $";
+static const char rcsid[] = "$OpenBSD: disklabel.c,v 1.151 2009/04/12 01:01:24 krw Exp $";
 #endif /* not lint */
 
 #include <sys/param.h>
@@ -82,8 +82,9 @@ static const char rcsid[] = "$OpenBSD: disklabel.c,v 1.147 2009/03/31 23:58:36 k
 #define NUMBOOT 0
 #endif
 
-char	*dkname, *specname;
+char	*dkname, *specname, *fstabfile;
 char	tmpfil[] = _PATH_TMPFILE;
+char	*mountpoints[MAXPARTITIONS];
 struct	disklabel lab;
 char	bootarea[BBSIZE];
 
@@ -108,6 +109,7 @@ int	dflag;
 int	tflag;
 int	verbose;
 int	donothing;
+char	print_unit;
 
 #ifdef DOSLABEL
 struct dos_partition *dosdp;	/* DOS partition, if found */
@@ -138,9 +140,7 @@ int
 main(int argc, char *argv[])
 {
 	int ch, f, writeable, error = 0;
-	char *fstabfile = NULL;
 	struct disklabel *lp;
-	char print_unit = 0;
 	FILE *t;
 
 	while ((ch = getopt(argc, argv, "ABEf:NRWb:cdenp:s:tvw")) != -1)
@@ -232,7 +232,7 @@ main(int argc, char *argv[])
 		op = READ;
 #endif
 
-	if (argc < 1 || (fstabfile && op != EDITOR))
+	if (argc < 1 || (fstabfile && !(op == EDITOR | aflag)))
 		usage();
 
 	dkname = argv[0];
@@ -265,27 +265,24 @@ main(int argc, char *argv[])
 	case EDIT:
 		if (argc != 1)
 			usage();
-		if ((lp = readlabel(f)) == NULL)
-			exit(1);
-		error = edit(lp, f);
+		readlabel(f);
+		error = edit(&lab, f);
 		break;
 	case EDITOR:
 		if (argc != 1)
 			usage();
-		if ((lp = readlabel(f)) == NULL)
-			exit(1);
-		error = editor(lp, f, specname, fstabfile, aflag);
+		readlabel(f);
+		error = editor(&lab, f);
 		break;
 	case READ:
 		if (argc != 1)
 			usage();
-		if ((lp = readlabel(f)) == NULL)
-			exit(1);
+		readlabel(f);
 		if (tflag)
-			makedisktab(stdout, lp);
+			makedisktab(stdout, &lab);
 		else
-			display(stdout, lp, NULL, print_unit, 1);
-		error = checklabel(lp);
+			display(stdout, &lab, print_unit, 1);
+		error = checklabel(&lab);
 		break;
 	case RESTORE:
 		if (argc < 2 || argc > 3)
@@ -310,9 +307,8 @@ main(int argc, char *argv[])
 		}
 		break;
 	case WRITE:
-		if (dflag) {
-			if (readlabel(f) == NULL)
-				exit(1);
+		if (dflag | aflag) {
+			readlabel(f);
 		} else if (argc < 2 || argc > 3)
 			usage();
 		else
@@ -327,9 +323,8 @@ main(int argc, char *argv[])
 	{
 		struct disklabel tlab;
 
-		if ((lp = readlabel(f)) == NULL)
-			exit(1);
-		tlab = *lp;
+		readlabel(f);
+		tlab = lab;
 		if (argc == 2)
 			makelabel(argv[1], NULL, &lab);
 		lp = makebootarea(bootarea, &lab, f);
@@ -580,10 +575,11 @@ findopenbsd(int f, off_t mbroff, struct dos_partition **first, int *n)
 		}
 		switch (dp[part].dp_typ) {
 		case DOSPTYP_OPENBSD:
-			fprintf(stderr, "# Inside MBR partition %d: "
-			    "type %02X start %u size %u\n",
-			    part, dp[part].dp_typ,
-			    letoh32(dp[part].dp_start), letoh32(dp[part].dp_size));
+			if (verbose)
+				fprintf(stderr, "# Inside MBR partition %d: "
+				    "type %02X start %u size %u\n", part,
+				    dp[part].dp_typ, letoh32(dp[part].dp_start),
+				    letoh32(dp[part].dp_size));
 			bcopy(&dp[part], &res, sizeof(struct dos_partition));
 			res.dp_start =
 			    htole32((off_t)letoh32(res.dp_start) + mbroff);
@@ -684,26 +680,24 @@ check_dpme(int f, uint32_t *start, uint32_t *size)
 #endif
 
 /*
- * Fetch disklabel for disk using ioctl.
+ * Fetch requested disklabel into 'lab' using ioctl.
  */
-struct disklabel *
+void
 readlabel(int f)
 {
-	struct disklabel *lp = NULL;
-
 	if (cflag && ioctl(f, DIOCRLDINFO) < 0)
 		err(4, "ioctl DIOCRLDINFO");
-	if (dflag) {
-		lp = &lab;
-		if (ioctl(f, DIOCGPDINFO, lp) < 0)
+
+	if (dflag | aflag) {
+		if (ioctl(f, DIOCGPDINFO, &lab) < 0)
 			err(4, "ioctl DIOCGPDINFO");
 	} else {
-		lp = &lab;
-		if (ioctl(f, DIOCGDINFO, lp) < 0)
+		if (ioctl(f, DIOCGDINFO, &lab) < 0)
 			err(4, "ioctl DIOCGDINFO");
 	}
 
-	return (lp);
+	if (aflag)
+		editor_allocspace(&lab);
 }
 
 /*
@@ -921,8 +915,7 @@ scale(u_int64_t sz, char unit, struct disklabel *lp)
  * Display a particular partition.
  */
 void
-display_partition(FILE *f, struct disklabel *lp, char **mp, int i,
-    char unit)
+display_partition(FILE *f, struct disklabel *lp, int i, char unit)
 {
 	volatile struct partition *pp = &lp->d_partitions[i];
 	double p_size, p_offset;
@@ -956,16 +949,14 @@ display_partition(FILE *f, struct disklabel *lp, char **mp, int i,
 			break;
 		}
 
-		if (mp != NULL) {
-			if (mp[i] != NULL)
-				fprintf(f, "# %s", mp[i]);
-		}
+		if (mountpoints[i] != NULL)
+			fprintf(f, "# %s", mountpoints[i]);
 		putc('\n', f);
 	}
 }
 
 void
-display(FILE *f, struct disklabel *lp, char **mp, char unit, int all)
+display(FILE *f, struct disklabel *lp, char unit, int all)
 {
 	int i, j;
 	double d;
@@ -1020,7 +1011,7 @@ display(FILE *f, struct disklabel *lp, char **mp, char unit, int all)
 		fprintf(f, "#    %16.16s %16.16s  fstype [fsize bsize  cpg]\n",
 		    "size", "offset");
 		for (i = 0; i < lp->d_npartitions; i++)
-			display_partition(f, lp, mp, i, unit);
+			display_partition(f, lp, i, unit);
 	}
 	fflush(f);
 }
@@ -1038,7 +1029,7 @@ edit(struct disklabel *lp, int f)
 		warn("%s", tmpfil);
 		return (1);
 	}
-	display(fp, lp, NULL, 0, 1);
+	display(fp, lp, 0, 1);
 	fprintf(fp, "\n# Notes:\n");
 	fprintf(fp,
 "# Up to 16 partitions are valid, named from 'a' to 'p'.  Partition 'a' is\n"
@@ -1675,11 +1666,11 @@ usage(void)
 #endif
 
 	fprintf(stderr,
-	    "usage: disklabel [-c | -d | -t] [-v] [-p unit] disk\t\t(read)\n");
+	    "usage: disklabel [-c | -d | -t] [-Av] [-p unit] disk\t\t(read)\n");
 	fprintf(stderr,
-	    "       disklabel -w [-c | -d] [-nv] disk disktype [packid]\t(write)\n");
+	    "       disklabel -w [-c | -d] [-Anv] disk disktype [packid]\t(write)\n");
 	fprintf(stderr,
-	    "       disklabel -e [-c | -d] [-nv] disk\t\t\t(edit)\n");
+	    "       disklabel -e [-c | -d] [-Anv] disk\t\t\t(edit)\n");
 	fprintf(stderr,
 	    "       disklabel -E [-c | -d] [-Anv] [-f tempfile] disk\t\t(simple editor)\n");
 	fprintf(stderr,

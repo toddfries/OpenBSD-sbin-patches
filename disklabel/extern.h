@@ -1,4 +1,4 @@
-/*	$OpenBSD: extern.h,v 1.11 2009/03/29 05:37:13 deraadt Exp $	*/
+/*	$OpenBSD: extern.h,v 1.14 2009/04/12 01:01:24 krw Exp $	*/
 
 /*
  * Copyright (c) 2003 Theo de Raadt <deraadt@openbsd.org>
@@ -19,17 +19,20 @@
 u_short	dkcksum(struct disklabel *);
 int	checklabel(struct disklabel *);
 double	scale(u_int64_t, char, struct disklabel *);
-void	display(FILE *, struct disklabel *, char **, char, int);
-void	display_partition(FILE *, struct disklabel *, char **, int, char);
+void	display(FILE *, struct disklabel *, char, int);
+void	display_partition(FILE *, struct disklabel *, int, char);
 
-struct disklabel *readlabel(int);
+void	readlabel(int);
 struct disklabel *makebootarea(char *, struct disklabel *, int);
-int	editor(struct disklabel *, int, char *, char *, int);
+int	editor(struct disklabel *, int);
 
 int	writelabel(int, char *, struct disklabel *);
-extern  char bootarea[], *specname;
+extern  char bootarea[], *specname, *fstabfile;
+extern	char *mountpoints[MAXPARTITIONS];
 extern  int donothing;
 extern  int dflag;
+extern	int verbose;
+extern	char print_unit;
 
 #ifdef DOSLABEL
 extern  struct dos_partition *dosdp;    /* DOS partition, if found */
