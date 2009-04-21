@@ -1,4 +1,4 @@
-/*	$OpenBSD: editor.c,v 1.191 2009/04/12 01:01:24 krw Exp $	*/
+/*	$OpenBSD: editor.c,v 1.193 2009/04/20 17:40:43 deraadt Exp $	*/
 
 /*
  * Copyright (c) 1997-2000 Todd C. Miller <Todd.Miller@courtesan.com>
@@ -17,7 +17,7 @@
  */
 
 #ifndef lint
-static char rcsid[] = "$OpenBSD: editor.c,v 1.191 2009/04/12 01:01:24 krw Exp $";
+static char rcsid[] = "$OpenBSD: editor.c,v 1.193 2009/04/20 17:40:43 deraadt Exp $";
 #endif /* not lint */
 
 #include <sys/types.h>
