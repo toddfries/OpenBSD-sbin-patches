@@ -1,4 +1,4 @@
-/*	$OpenBSD: disklabel.c,v 1.154 2009/05/17 01:17:12 krw Exp $	*/
+/*	$OpenBSD: disklabel.c,v 1.156 2009/05/31 00:05:03 krw Exp $	*/
 
 /*
  * Copyright (c) 1987, 1993
@@ -39,7 +39,7 @@ static const char copyright[] =
 #endif /* not lint */
 
 #ifndef lint
-static const char rcsid[] = "$OpenBSD: disklabel.c,v 1.154 2009/05/17 01:17:12 krw Exp $";
+static const char rcsid[] = "$OpenBSD: disklabel.c,v 1.156 2009/05/31 00:05:03 krw Exp $";
 #endif /* not lint */
 
 #include <sys/param.h>
@@ -308,10 +308,9 @@ main(int argc, char *argv[])
 		lp = makebootarea(bootarea, &lab, f);
 		if (!(t = fopen(argv[1], "r")))
 			err(4, "%s", argv[1]);
-		if (getasciilabel(t, lp))
+		error = getasciilabel(t, lp);
+		if (error == 0)
 			error = writelabel(f, bootarea, lp);
-		else
-			error = 1;
 		fclose(t);
 		break;
 	case SETWRITEABLE:
@@ -329,7 +328,8 @@ main(int argc, char *argv[])
 			makelabel(argv[1], argc == 3 ? argv[2] : NULL, &lab);
 		lp = makebootarea(bootarea, &lab, f);
 		*lp = lab;
-		if (checklabel(lp) == 0)
+		error = checklabel(&lab);
+		if (error == 0)
 			error = writelabel(f, bootarea, lp);
 		break;
 #if NUMBOOT > 0
@@ -343,7 +343,8 @@ main(int argc, char *argv[])
 			makelabel(argv[1], NULL, &lab);
 		lp = makebootarea(bootarea, &lab, f);
 		*lp = tlab;
-		if (checklabel(lp) == 0)
+		error = checklabel(&lab);
+		if (error == 0)
 			error = writelabel(f, bootarea, lp);
 		break;
 	}
@@ -936,10 +937,9 @@ void
 display_partition(FILE *f, struct disklabel *lp, int i, char unit)
 {
 	volatile struct partition *pp = &lp->d_partitions[i];
-	double p_size, p_offset;
+	double p_size;
 
 	p_size = scale(DL_GETPSIZE(pp), unit, lp);
-	p_offset = scale(DL_GETPOFFSET(pp), unit, lp);
 	if (DL_GETPSIZE(pp)) {
 		u_int32_t frag = DISKLABELV1_FFS_FRAG(pp->p_fragblock);
 		u_int32_t fsize = DISKLABELV1_FFS_FSIZE(pp->p_fragblock);
@@ -948,9 +948,9 @@ display_partition(FILE *f, struct disklabel *lp, int i, char unit)
 			fprintf(f, "  %c: %16llu %16llu ", 'a' + i,
 			    DL_GETPSIZE(pp), DL_GETPOFFSET(pp));
 		else
-			fprintf(f, "  %c: %15.*f%c %15.*f%c ", 'a' + i,
+			fprintf(f, "  %c: %15.*f%c %16llu ", 'a' + i,
 			    unit == 'B' ? 0 : 1, p_size, unit,
-			    unit == 'B' ? 0 : 1, p_offset, unit);
+			    DL_GETPOFFSET(pp));
 		if ((unsigned) pp->p_fstype < FSMAXTYPES)
 			fprintf(f, "%7.7s", fstypenames[pp->p_fstype]);
 		else
@@ -1000,12 +1000,12 @@ display(FILE *f, struct disklabel *lp, char unit, int all)
 	fprintf(f, "tracks/cylinder: %u\n", lp->d_ntracks);
 	fprintf(f, "sectors/cylinder: %u\n", lp->d_secpercyl);
 	fprintf(f, "cylinders: %u\n", lp->d_ncylinders);
+	fprintf(f, "total sectors: %llu", DL_GETDSIZE(lp));
 	d = scale(DL_GETDSIZE(lp), unit, lp);
-	if (d < 0)
-		fprintf(f, "total sectors: %llu\n", DL_GETDSIZE(lp));
-	else
-		fprintf(f, "total bytes: %.*f%c\n", unit == 'B' ? 0 : 1,
+	if (d > 0)
+		fprintf(f, " # total bytes: %.*f%c", unit == 'B' ? 0 : 1,
 		    d, unit);
+	fprintf(f, "\n");
 
 	fprintf(f, "rpm: %hu\n", lp->d_rpm);
 	fprintf(f, "interleave: %hu\n", lp->d_interleave);
@@ -1037,7 +1037,7 @@ display(FILE *f, struct disklabel *lp, char unit, int all)
 int
 edit(struct disklabel *lp, int f)
 {
-	int first, ch, fd;
+	int first, ch, fd, error = 0;
 	struct disklabel label;
 	FILE *fp;
 
@@ -1066,7 +1066,8 @@ edit(struct disklabel *lp, int f)
 			break;
 		}
 		memset(&label, 0, sizeof(label));
-		if (getasciilabel(fp, &label)) {
+		error = getasciilabel(fp, &label);
+		if (error == 0) {
 			if (cmplabel(lp, &label) == 0) {
 				puts("No changes.");
 				fclose(fp);
@@ -1493,7 +1494,7 @@ getasciilabel(FILE *f, struct disklabel *lp)
 		;
 	}
 	errors += checklabel(lp);
-	return (errors == 0);
+	return (errors > 0);
 }
 
 /*
@@ -1598,7 +1599,7 @@ checklabel(struct disklabel *lp)
 			warnx("warning, unused partition %c: size %lld offset %lld",
 			    'a' + i, DL_GETPSIZE(pp), DL_GETPOFFSET(pp));
 	}
-	return (errors);
+	return (errors > 0);
 }
 
 #if NUMBOOT > 0
