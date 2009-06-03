@@ -1,4 +1,4 @@
-/*	$OpenBSD: mount_xfs.c,v 1.9 2006/12/15 13:04:06 jmc Exp $	*/
+/*	$OpenBSD: mount_nnpfs.c,v 1.1 2009/06/03 14:45:49 jj Exp $	*/
 /*
  * Copyright (c) 1995, 1996, 1997 Kungliga Tekniska Högskolan
  * (Royal Institute of Technology, Stockholm, Sweden).
@@ -94,7 +94,7 @@ main(int argc, char **argv)
 	if (realpath(argv[1], path) == NULL)
 		err(1, "realpath %s", argv[1]);
 
-	if (mount(MOUNT_XFS, path, mntflags, argv[0])) {
+	if (mount(MOUNT_NNPFS, path, mntflags, argv[0])) {
 		if (errno == EOPNOTSUPP)
 			errx(1, "Filesystem not supported by kernel");
 		else
