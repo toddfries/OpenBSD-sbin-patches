@@ -1,4 +1,4 @@
-/*	$OpenBSD: route.c,v 1.127 2009/02/03 16:44:15 michele Exp $	*/
+/*	$OpenBSD: route.c,v 1.132 2009/05/31 18:02:28 claudio Exp $	*/
 /*	$NetBSD: route.c,v 1.16 1996/04/15 18:27:05 cgd Exp $	*/
 
 /*
@@ -79,7 +79,7 @@ int	rtm_addrs, s;
 int	forcehost, forcenet, Fflag, nflag, af, qflag, tflag;
 int	iflag, verbose, aflen = sizeof(struct sockaddr_in);
 int	locking, lockrest, debugonly;
-u_long	mpls_flags = 0;
+u_long	mpls_flags = MPLS_OP_LOCAL;
 u_long	rtm_inits;
 uid_t	uid;
 u_int	tableid = 0;
@@ -90,7 +90,7 @@ void	 flushroutes(int, char **);
 int	 newroute(int, char **);
 void	 show(int, char *[]);
 int	 keyword(char *);
-void	 monitor(void);
+void	 monitor(int, char *[]);
 int	 prefixlen(char *);
 void	 sockaddr(char *, struct sockaddr *);
 void	 sodump(sup, char *);
@@ -104,7 +104,7 @@ void	 mask_addr(union sockunion *, union sockunion *, int);
 int	 inet6_makenetandmask(struct sockaddr_in6 *);
 int	 getaddr(int, char *, struct hostent **);
 void	 getmplslabel(char *, int);
-int	 rtmsg(int, int, int, u_short);
+int	 rtmsg(int, int, int, u_char);
 __dead void usage(char *);
 void	 set_metric(char *, int);
 void	 inet_makenetandmask(u_int32_t, struct sockaddr_in *, int);
@@ -169,14 +169,17 @@ main(int argc, char **argv)
 
 	pid = getpid();
 	uid = geteuid();
+	if (*argv == NULL)
+		usage(NULL);
+	if (keyword(*argv) == K_MONITOR)
+		monitor(argc, argv);
+
 	if (tflag)
 		s = open(_PATH_DEVNULL, O_WRONLY);
 	else
 		s = socket(PF_ROUTE, SOCK_RAW, 0);
 	if (s == -1)
 		err(1, "socket");
-	if (*argv == NULL)
-		usage(NULL);
 	switch (keyword(*argv)) {
 	case K_GET:
 		uid = 0;
@@ -191,7 +194,7 @@ main(int argc, char **argv)
 		show(argc, argv);
 		break;
 	case K_MONITOR:
-		monitor();
+		/* handled above */
 		break;
 	case K_FLUSH:
 		flushroutes(argc, argv);
@@ -210,18 +213,20 @@ main(int argc, char **argv)
 void
 flushroutes(int argc, char **argv)
 {
+	const char *errstr;
 	size_t needed;
 	int mib[7], rlen, seqno;
 	char *buf = NULL, *next, *lim = NULL;
 	struct rt_msghdr *rtm;
 	struct sockaddr *sa;
+	u_char prio = 0;
+	unsigned int ifindex;
 
 	if (uid)
 		errx(1, "must be root to alter routing table");
 	shutdown(s, 0); /* Don't want to read back our messages */
-	if (argc > 1) {
-		argv++;
-		if (argc == 2 && **argv == '-')
+	while (--argc > 0) {
+		if (**(++argv) == '-')
 			switch (keyword(*argv + 1)) {
 			case K_INET:
 				af = AF_INET;
@@ -234,6 +239,22 @@ flushroutes(int argc, char **argv)
 				break;
 			case K_MPLS:
 				af = AF_MPLS;
+				break;
+			case K_IFACE:
+			case K_INTERFACE:
+				if (!--argc)
+					usage(1+*argv);
+				ifindex = if_nametoindex(*++argv);
+				if (ifindex == 0)
+					errx(1, "no such interface %s", *argv);
+				break;
+			case K_PRIORITY:
+				if (!--argc)
+					usage(1+*argv);
+				prio = strtonum(*++argv, 0, RTP_MAX, &errstr);
+				if (errstr)
+					errx(1, "priority is %s: %s", errstr,
+					    *argv);
 				break;
 			default:
 				usage(*argv);
@@ -277,6 +298,10 @@ flushroutes(int argc, char **argv)
 			continue;
 		sa = (struct sockaddr *)(next + rtm->rtm_hdrlen);
 		if (af && sa->sa_family != af)
+			continue;
+		if (ifindex && rtm->rtm_index != ifindex)
+			continue;
+		if (prio && rtm->rtm_priority != prio)
 			continue;
 		if (sa->sa_family == AF_KEY)
 			continue;  /* Don't flush SPD */
@@ -353,7 +378,7 @@ newroute(int argc, char **argv)
 	int ishost = 0, ret = 0, attempts, oerrno, flags = RTF_STATIC;
 	int fmask = 0;
 	int key;
-	u_short prio = 0;
+	u_char prio = 0;
 	struct hostent *hp = NULL;
 
 	if (uid)
@@ -404,7 +429,10 @@ newroute(int argc, char **argv)
 				if (!--argc)
 					usage(1+*argv);
 				if (af != AF_MPLS)
-					errx(1, "-in requires -mpls");
+					errx(1, "-out requires -mpls");
+				if (mpls_flags == MPLS_OP_LOCAL)
+					errx(1, "-out requires -push, -pop, "
+					    "-swap");
 				getmplslabel(*++argv, 0);
 				break;
 			case K_POP:
@@ -985,11 +1013,42 @@ interfaces(void)
 }
 
 void
-monitor(void)
+monitor(int argc, char *argv[])
 {
+	int af = 0;
+	unsigned int filter = 0;
 	int n;
 	char msg[2048];
 	time_t now;
+
+	while (--argc > 0) {
+		if (**(++argv)== '-')
+			switch (keyword(*argv + 1)) {
+			case K_INET:
+				af = AF_INET;
+				break;
+			case K_INET6:
+				af = AF_INET6;
+				break;
+			case K_IFACE:
+				filter = ROUTE_FILTER(RTM_IFINFO) |
+				    ROUTE_FILTER(RTM_IFANNOUNCE);
+				break;
+			default:
+				usage(*argv);
+				/* NOTREACHED */
+			}
+		else
+			usage(*argv);
+	}
+
+	s = socket(PF_ROUTE, SOCK_RAW, af);
+	if (s == -1)
+		err(1, "socket");
+
+	if (setsockopt(s, AF_ROUTE, ROUTE_MSGFILTER, &filter,
+	    sizeof(filter)) == -1)
+		err(1, "setsockopt");
 
 	verbose = 1;
 	if (debugonly) {
@@ -1014,7 +1073,7 @@ struct {
 } m_rtmsg;
 
 int
-rtmsg(int cmd, int flags, int fmask, u_short prio)
+rtmsg(int cmd, int flags, int fmask, u_char prio)
 {
 	static int seq;
 	char *cp = m_rtmsg.m_space;
@@ -1244,7 +1303,7 @@ print_rtmsg(struct rt_msghdr *rtm, int msglen)
 		printf("\n");
 		break;
 	default:
-		printf("priority %d, ", rtm->rtm_priority & RTP_MASK);
+		printf("priority %d, ", rtm->rtm_priority);
 		printf("table %u, pid: %ld, seq %d, errno %d\nflags:",
 		    rtm->rtm_tableid, (long)rtm->rtm_pid, rtm->rtm_seq,
 		    rtm->rtm_errno);
@@ -1256,7 +1315,7 @@ print_rtmsg(struct rt_msghdr *rtm, int msglen)
 char *
 priorityname(u_int8_t prio)
 {
-	switch (prio & RTP_MASK) {
+	switch (prio) {
 	case RTP_NONE:
 		return ("none");
 	case RTP_CONNECTED:
@@ -1349,7 +1408,7 @@ print_getmsg(struct rt_msghdr *rtm, int msglen)
 		    ifp->sdl_nlen, ifp->sdl_data);
 	if (ifa)
 		printf(" if address: %s\n", routename(ifa));
-	printf("   priority: %u (%s)\n", rtm->rtm_priority & RTP_MASK,
+	printf("   priority: %u (%s)\n", rtm->rtm_priority,
 	   priorityname(rtm->rtm_priority)); 
 	printf("      flags: ");
 	bprintf(stdout, rtm->rtm_flags, routeflags);

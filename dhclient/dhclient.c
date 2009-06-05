@@ -1,4 +1,4 @@
-/*	$OpenBSD: dhclient.c,v 1.123 2009/02/01 12:10:14 miod Exp $	*/
+/*	$OpenBSD: dhclient.c,v 1.128 2009/06/03 02:05:34 stevesk Exp $	*/
 
 /*
  * Copyright 2004 Henning Brauer <henning@openbsd.org>
@@ -150,7 +150,6 @@ get_ifa(char *cp, int n)
 }
 struct iaddr defaddr = { 4 };
 
-/* ARGSUSED */
 void
 routehandler(void)
 {
@@ -165,6 +164,7 @@ routehandler(void)
 	struct sockaddr *sa;
 	struct iaddr a;
 	ssize_t n;
+	char *errmsg, buf[64];
 
 	do {
 		n = read(routefd, &msg, sizeof(msg));
@@ -185,8 +185,10 @@ routehandler(void)
 			break;
 		sa = get_ifa((char *)ifam + ifam->ifam_hdrlen,
 		    ifam->ifam_addrs);
-		if (sa == NULL)
+		if (sa == NULL) {
+			errmsg = "sa == NULL";
 			goto die;
+		}
 
 		if ((a.len = sizeof(struct in_addr)) > sizeof(a.iabuf))
 			error("king bula sez: len mismatch");
@@ -203,6 +205,9 @@ routehandler(void)
 			/* new addr is the one we set */
 			break;
 
+		snprintf(buf, sizeof(buf), "%s: %s",
+		    "new address not one we set", piaddr(a));
+		errmsg = buf;
 		goto die;
 	case RTM_DELADDR:
 		ifam = (struct ifa_msghdr *)rtm;
@@ -213,13 +218,16 @@ routehandler(void)
 			break;
 		if (scripttime == 0 || t < scripttime + 10)
 			break;
+		errmsg = "interface address deleted";
 		goto die;
 	case RTM_IFINFO:
 		ifm = (struct if_msghdr *)rtm;
 		if (ifm->ifm_index != ifi->index)
 			break;
-		if ((rtm->rtm_flags & RTF_UP) == 0)
+		if ((rtm->rtm_flags & RTF_UP) == 0) {
+			errmsg = "interface down";
 			goto die;
+		}
 
 		linkstat =
 		    LINK_STATE_IS_UP(ifm->ifm_data.ifi_link_state) ? 1 : 0;
@@ -237,8 +245,10 @@ routehandler(void)
 	case RTM_IFANNOUNCE:
 		ifan = (struct if_announcemsghdr *)rtm;
 		if (ifan->ifan_what == IFAN_DEPARTURE &&
-		    ifan->ifan_index == ifi->index)
+		    ifan->ifan_index == ifi->index) {
+			errmsg = "interface departure";
 			goto die;
+		}
 		break;
 	default:
 		break;
@@ -250,7 +260,7 @@ die:
 	if (client->alias)
 		script_write_params("alias_", client->alias);
 	script_go();
-	exit(1);
+	error("routehandler: %s", errmsg);
 }
 
 int
@@ -349,11 +359,8 @@ main(int argc, char *argv[])
 	if ((nullfd = open(_PATH_DEVNULL, O_RDWR, 0)) == -1)
 		error("cannot open %s: %m", _PATH_DEVNULL);
 
-	if ((pw = getpwnam("_dhcp")) == NULL) {
-		warning("no such user: _dhcp, falling back to \"nobody\"");
-		if ((pw = getpwnam("nobody")) == NULL)
-			error("no such user: nobody");
-	}
+	if ((pw = getpwnam("_dhcp")) == NULL)
+			error("no such user: _dhcp");
 
 	if (pipe(pipe_fd) == -1)
 		error("pipe");
@@ -379,10 +386,8 @@ main(int argc, char *argv[])
 	if ((routefd = socket(PF_ROUTE, SOCK_RAW, 0)) == -1)
 		error("socket(PF_ROUTE, SOCK_RAW): %m");
 
-	ROUTE_SETFILTER(rtfilter, RTM_NEWADDR);
-	ROUTE_SETFILTER(rtfilter, RTM_DELADDR);
-	ROUTE_SETFILTER(rtfilter, RTM_IFINFO);
-	ROUTE_SETFILTER(rtfilter, RTM_IFANNOUNCE);
+	rtfilter = ROUTE_FILTER(RTM_NEWADDR) | ROUTE_FILTER(RTM_DELADDR) |
+	    ROUTE_FILTER(RTM_IFINFO) | ROUTE_FILTER(RTM_IFANNOUNCE);
 
 	if (setsockopt(routefd, PF_ROUTE, ROUTE_MSGFILTER,
 	    &rtfilter, sizeof(rtfilter)) == -1)
@@ -602,16 +607,11 @@ dhcpack(struct iaddr client_addr, struct option_data *options)
 {
 	struct client_lease *lease;
 
-	if (client->xid != client->packet.xid)
-		return;
-
 	if (client->state != S_REBOOTING &&
 	    client->state != S_REQUESTING &&
 	    client->state != S_RENEWING &&
 	    client->state != S_REBINDING)
 		return;
-
-	note("DHCPACK from %s", piaddr(client_addr));
 
 	lease = packet_to_lease(client_addr, options);
 	if (!lease) {
@@ -744,13 +744,8 @@ dhcpoffer(struct iaddr client_addr, struct option_data *options)
 	char *name = options[DHO_DHCP_MESSAGE_TYPE].len ? "DHCPOFFER" :
 	    "BOOTREPLY";
 
-	if (client->xid != client->packet.xid)
-		return;
-
 	if (client->state != S_SELECTING)
 		return;
-
-	note("%s from %s", name, piaddr(client_addr));
 
 	/* If this lease doesn't supply the minimum required parameters,
 	   blow it off. */
@@ -922,16 +917,11 @@ packet_to_lease(struct iaddr client_addr, struct option_data *options)
 void
 dhcpnak(struct iaddr client_addr, struct option_data *options)
 {
-	if (client->xid != client->packet.xid)
-		return;
-
 	if (client->state != S_REBOOTING &&
 	    client->state != S_REQUESTING &&
 	    client->state != S_RENEWING &&
 	    client->state != S_REBINDING)
 		return;
-
-	note("DHCPNAK from %s", piaddr(client_addr));
 
 	if (!client->active) {
 		note("DHCPNAK with no active lease.");

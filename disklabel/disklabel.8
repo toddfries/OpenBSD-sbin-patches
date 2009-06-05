@@ -1,4 +1,4 @@
-.\"	$OpenBSD: disklabel.8,v 1.71 2008/08/10 13:00:25 sobrado Exp $
+.\"	$OpenBSD: disklabel.8,v 1.85 2009/06/02 16:23:45 krw Exp $
 .\"	$NetBSD: disklabel.8,v 1.9 1995/03/18 14:54:38 cgd Exp $
 .\"
 .\" Copyright (c) 1987, 1988, 1991, 1993
@@ -33,7 +33,7 @@
 .\"
 .\"	@(#)disklabel.8	8.2 (Berkeley) 4/19/94
 .\"
-.Dd $Mdocdate: August 10 2008 $
+.Dd $Mdocdate: June 2 2009 $
 .Dt DISKLABEL 8
 .Os
 .Sh NAME
@@ -42,24 +42,24 @@
 .Sh SYNOPSIS
 .Nm disklabel
 .Op Fl c | d | t
-.Op Fl v
-.Op Fl p Ar unit
+.Op Fl Av
+.Op Fl h | p Ar unit
 .Ar disk
 .Nm disklabel
 .Fl w
 .Op Fl c | d
-.Op Fl nv
+.Op Fl Anv
 .Ar disk Ar disktype
 .Op Ar packid
 .Nm disklabel
 .Fl e
 .Op Fl c | d
-.Op Fl nv
+.Op Fl Anv
 .Ar disk
 .Nm disklabel
 .Fl E
 .Op Fl c | d
-.Op Fl nv
+.Op Fl Anv
 .Op Fl f Ar tempfile
 .Ar disk
 .Nm disklabel
@@ -103,10 +103,39 @@ and the partition layout, stored on the disk itself.
 It is used by the operating system to optimize disk I/O and
 locate the filesystems resident on the disk.
 .Pp
+.Nm
+supports 15 configurable partitions,
+.Sq a
+through
+.Sq p ,
+excluding
+.Sq c .
+The
+.Sq c
+partition describes the entire physical disk, is automatically created
+by the kernel, and cannot be modified or deleted by
+.Nm .
+By convention, the
+.Sq a
+partition of the boot disk is the root partition, and the
+.Sq b
+partition of the boot disk is the swap partition,
+but all other letters can be used in any order for any other
+partitions as desired.
+.Pp
 The options are as follows:
 .Bl -tag -width Ds
+.It Fl A
+Automatically allocate all the disk space in the
+.Ox
+portion of the disk in the recommended manner.
 .It Fl B
 Install bootstrap code.
+Some architectures instead require bootstrap code installation to be
+done using an
+.Xr installboot 8
+type program, as described in
+.Xr boot 8 .
 .It Fl b Ar boot1
 Specify the single level boot program, or the primary boot program,
 depending on the system boot architecture
@@ -120,12 +149,9 @@ Use the
 label.
 This ignores any existing
 .Ox
-partitions on the disk.
-Note that this option will only work for disks
-that are capable of reporting their geometry, such as SCSI, IDE, and ESDI.
+disk label on the disk.
 .It Fl E
-Use a simple initial label editor, using the command-driven built-in
-editor described below.
+Use the built-in command-driven label editor described below.
 .It Fl e
 Edit an existing disk label using the editor specified in the
 .Ev EDITOR
@@ -147,13 +173,15 @@ flag.
 If
 .Ar tempfile
 already exists, it will be overwritten.
+.It Fl h
+Print partition sizes in human readable format.
 .It Fl N
 Disallow writing of the pack label area on the selected disk.
 .It Fl n
 Make no permanent changes to the disklabel
 .Pq useful for debugging purposes .
 .It Fl p Ar unit
-Print partition sizes and offsets in
+Print partition sizes in
 .Ar unit
 instead of sectors.
 Valid units are b(ytes), c(ylinders), k(ilobytes), m(egabytes), g(igabytes)
@@ -249,10 +277,9 @@ When the editor terminates, the formatted label is reread and
 used to rewrite the disk label.
 Existing bootstrap code is unchanged.
 .Pp
-The initial label editor mode
+The built-in label editor
 .Pq fourth form
-is only intended for new disks as it will move partitions around as necessary
-to maintain a contiguous pool of free blocks.
+provides a simple interactive label editor.
 Some commands or prompts take an optional unit.
 Available units are
 .Sq b
@@ -290,6 +317,8 @@ may be specified to get more detailed help.
 There is also
 .Pq simple
 context-sensitive help available at most prompts.
+.It Cm A
+Allocate all the disk space in the recommended manner.
 .It Cm a Op Ar part
 Add new partition.
 This option adds a new BSD partition.
@@ -331,9 +360,6 @@ Delete an existing partition (or
 .Ql *
 to delete all partitions).
 If no partition is specified, the user will be prompted for one.
-The
-.Ql c
-partition cannot be deleted.
 .It Cm e
 Edit drive parameters.
 This option is used to set the following parameters:
@@ -382,6 +408,10 @@ If a
 .Em unit
 is given, the size and offsets are displayed in terms of the
 specified unit.
+If the unit is
+.Sq *
+it is automatically determined by the size of the smallest
+partition.
 .It Cm q
 Quit the editor.
 If any changes have been made, the user will be
@@ -397,6 +427,8 @@ format (suitable for loading via the
 .Fl R
 option).
 If no path is specified, the user will be prompted for one.
+.It Cm U
+Undo all changes made since entering the editor.
 .It Cm u
 Undo
 .Pq or redo
@@ -416,9 +448,7 @@ By default, some settings are reserved for experts only
 .It Cm x
 Exit the editor without saving any changes to the label.
 .It Cm z
-Zeroes out the existing partition table, leaving only the
-.Sq c
-partition.
+Zero out the existing partition table and mountpoint information.
 The drive parameters are not changed.
 .El
 .Pp
@@ -610,54 +640,7 @@ will not install bootstrap code that overlaps it.
 .Xr disktab 5 ,
 .Xr scan_ffs 8
 .Sh CAVEATS
-On architectures which have it,
-.Xr installboot 8
-is normally used to install boot code.
-The
-.Fl B
-option to
-.Nm
-can still be used to install old style boot code,
-but this usage is deprecated.
-.Pp
-On some machines, such as the sparc, partition tables
-may not exhibit the full functionality that is described above.
-.Pp
-.Nm
-only supports up to a maximum of 15 partitions,
-.Sq a
-through
-.Sq p ,
-excluding
-.Sq c .
-The
-.Sq c
-partition is reserved for the entire physical disk.
-By convention, the
-.Sq a
-partition of the boot disk is the root partition, and the
-.Sq b
-partition of the boot disk is the swap partition,
-but all other letters can be used in any order for any other
-partitions as desired.
-.Pp
 The maximum disk and partition size is 64PB.
-.Sh BUGS
-When a disk name is given without a full pathname, the constructed
-device name uses the
-.Sq a
-partition on the tahoe, the
-.Sq c
-partition on all others.
-In
-.Fl E
-mode,
-.Nm
-is far too quick to shuffle partitions around; it should keep a
-free block list and only move partitions around with the user's
-permission.
-Also, in
-.Fl E
-mode, partitions outside the
-.Ox
-portion of the disk should be changeable.
+.Pp
+On some machines, such as Sparc and Sparc64, partition tables
+may not exhibit the full functionality described above.
