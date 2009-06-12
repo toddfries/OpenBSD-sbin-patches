@@ -1,4 +1,4 @@
-/*	$OpenBSD: ifconfig.c,v 1.215 2009/04/27 22:52:55 deraadt Exp $	*/
+/*	$OpenBSD: ifconfig.c,v 1.218 2009/06/11 20:15:28 chl Exp $	*/
 /*	$NetBSD: ifconfig.c,v 1.40 1997/10/01 02:19:43 enami Exp $	*/
 
 /*
@@ -121,6 +121,7 @@ struct  netrange	at_nr;		/* AppleTalk net range */
 char	name[IFNAMSIZ];
 int	flags, setaddr, setipdst, doalias;
 u_long	metric, mtu;
+int	rdomainid;
 int	clearaddr, s;
 int	newaddr = 0;
 int	af = AF_INET;
@@ -142,6 +143,7 @@ void	setifrtlabel(const char *, int);
 void	setiflladdr(const char *, int);
 void	setifdstaddr(const char *, int);
 void	setifflags(const char *, int);
+void	setifxflags(const char *, int);
 void	setifbroadaddr(const char *, int);
 void	setifdesc(const char *, int);
 void	unsetifdesc(const char *, int);
@@ -232,6 +234,7 @@ void	unsettrunkport(const char *, int);
 void	settrunkproto(const char *, int);
 void	trunk_status(void);
 void	setpriority(const char *, int);
+void	setinstance(const char *, int);
 int	main(int, char *[]);
 int	prefix(void *val, int);
 
@@ -383,6 +386,7 @@ const struct	cmd {
 	{ "-peerflag",	NEXTARG,	0,		unsetsppppeerflag },
 	{ "nwflag",	NEXTARG,	0,		setifnwflag },
 	{ "-nwflag",	NEXTARG,	0,		unsetifnwflag },
+	{ "rdomain",	NEXTARG,	0,		setinstance },
 #endif /* SMALL */
 #if 0
 	/* XXX `create' special-cased below */
@@ -411,6 +415,7 @@ const struct	cmd {
 	{ "-flowsrc",	1,		0,		unsetpflow_sender },
 	{ "flowdst", 	NEXTARG,	0,		setpflow_receiver },
 	{ "-flowdst", 1,		0,		unsetpflow_receiver },
+	{ "-inet6",	IFXF_NOINET6,	0,		setifxflags } ,
 #endif
 	{ NULL, /*src*/	0,		0,		setifaddr },
 	{ NULL, /*dst*/	0,		0,		setifdstaddr },
@@ -501,6 +506,7 @@ main(int argc, char *argv[])
 	int Cflag = 0;
 	int gflag = 0;
 	int i;
+	int noprint = 0;
 
 	/* If no args at all, print all interfaces.  */
 	if (argc < 2) {
@@ -589,6 +595,12 @@ main(int argc, char *argv[])
 		create = (argc > 0) && strcmp(argv[0], "destroy") != 0;
 		(void)getinfo(&ifr, create);
 	}
+#ifdef INET6
+	if (argc == 0 && af == AF_INET6)
+		noprint = 1;	/* handles "ifconfig <if> inet6" */
+	if (af == AF_INET6)
+		setifxflags("inet6", -IFXF_NOINET6);
+#endif
 	while (argc > 0) {
 		const struct cmd *p;
 
@@ -644,7 +656,7 @@ nextarg:
 		argc--, argv++;
 	}
 
-	if (argc == 0 && actions == 0) {
+	if (argc == 0 && actions == 0 && !noprint) {
 		printif(ifr.ifr_name, 1);
 		exit(0);
 	}
@@ -730,7 +742,10 @@ getinfo(struct ifreq *ifr, int create)
 		mtu = 0;
 	else
 		mtu = ifr->ifr_mtu;
-
+	if (ioctl(s, SIOCGIFRTABLEID, (caddr_t)ifr) < 0)
+		rdomainid = 0;
+	else
+		rdomainid = ifr->ifr_rdomainid;
 	return (0);
 }
 
@@ -1111,6 +1126,29 @@ setifflags(const char *vname, int value)
 	my_ifr.ifr_flags = flags;
 	if (ioctl(s, SIOCSIFFLAGS, (caddr_t)&my_ifr) < 0)
 		err(1, "SIOCSIFFLAGS");
+}
+
+/* ARGSUSED */
+void
+setifxflags(const char *vname, int value)
+{
+	struct ifreq my_ifr;
+
+	bcopy((char *)&ifr, (char *)&my_ifr, sizeof(struct ifreq));
+
+	if (ioctl(s, SIOCGIFXFLAGS, (caddr_t)&my_ifr) < 0)
+		warn("SIOCGIFXFLAGS");
+	(void) strlcpy(my_ifr.ifr_name, name, sizeof(my_ifr.ifr_name));
+	flags = my_ifr.ifr_flags;
+
+	if (value < 0) {
+		value = -value;
+		flags &= ~value;
+	} else
+		flags |= value;
+	my_ifr.ifr_flags = flags;
+	if (ioctl(s, SIOCSIFXFLAGS, (caddr_t)&my_ifr) < 0)
+		warn("SIOCSIFXFLAGS");
 }
 
 #ifdef INET6
@@ -2586,6 +2624,8 @@ status(int link, struct sockaddr_dl *sdl)
 
 	printf("%s: ", name);
 	printb("flags", flags, IFFBITS);
+	if (rdomainid)
+		printf(" rdomain %i", rdomainid);
 	if (metric)
 		printf(" metric %lu", metric);
 	if (mtu)
@@ -4613,3 +4653,20 @@ setiflladdr(const char *addr, int param)
 		warn("SIOCSIFLLADDR");
 }
 
+#ifndef SMALL
+void
+setinstance(const char *id, int param)
+{
+	const char *errmsg = NULL;
+	int rdomainid;
+
+	rdomainid = strtonum(id, 0, 128, &errmsg);
+	if (errmsg)
+		errx(1, "rdomain %s: %s", id, errmsg);
+
+	strlcpy(ifr.ifr_name, name, sizeof(ifr.ifr_name));
+	ifr.ifr_rdomainid = rdomainid;
+	if (ioctl(s, SIOCSIFRTABLEID, (caddr_t)&ifr) < 0)
+		warn("SIOCSIFRTABLEID");
+}
+#endif
