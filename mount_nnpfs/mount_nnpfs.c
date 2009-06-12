@@ -62,7 +62,8 @@ static const struct mntopt mopts[] = {
 static void
 usage(void)
 {
-	fprintf(stderr, "usage: %s [-o options] special node\n", __progname);
+	fprintf(stderr, "usage: %s [-o options] special node\n",
+		__progname);
 	exit(1);
 }
 
