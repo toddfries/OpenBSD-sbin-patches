@@ -1,4 +1,4 @@
-/*	$OpenBSD: wsconsctl.c,v 1.21 2008/06/26 05:42:06 ray Exp $	*/
+/*	$OpenBSD: wsconsctl.c,v 1.23 2009/07/15 21:38:16 martynas Exp $	*/
 /*	$NetBSD: wsconsctl.c,v 1.2 1998/12/29 22:40:20 hannken Exp $ */
 
 /*-
@@ -55,7 +55,7 @@ struct vartypesw {
 	int fd;
 	struct field *field_tab;
 	void (*getval)(const char *pre, int);
-	void (*putval)(const char *pre, int);
+	int (*putval)(const char *pre, int);
 } typesw[] = {
 	{ "keyboard", PATH_KEYBOARD, -1, keyboard_field_tab,
 	  keyboard_get_values, keyboard_put_values },
@@ -87,9 +87,9 @@ usage(char *msg)
 int
 main(int argc, char *argv[])
 {
-	int i, ch, error = 0, aflag = 0, do_merge;
+	int i, ch, error = 0, aflag = 0, do_merge, putval;
 	struct vartypesw *sw = NULL;
-	char *sep = "=", *p;
+	char *getsep = "=", *setsep = " -> ", *p;
 	char *wdev = NULL;
 	struct field *f;
 
@@ -102,7 +102,7 @@ main(int argc, char *argv[])
 			wdev = optarg;
 			break;
 		case 'n':
-			sep = NULL;
+			getsep = setsep = NULL;
 			break;
 		case 'w':
 			/* compat */
@@ -140,7 +140,7 @@ main(int argc, char *argv[])
 					warnx("Use explicit arg to view %s.%s.",
 					      sw->name, f->name);
 				else if (f->flags & FLG_GET)
-					pr_field(sw->name, f, sep);
+					pr_field(sw->name, f, getsep);
 		}
 	} else if (argc > 0) {
 		for (i = 0; i < argc; i++) {
@@ -171,7 +171,7 @@ main(int argc, char *argv[])
 				(*sw->getval)(sw->name, sw->fd);
 				if (f->flags & FLG_DEAD)
 					continue;
-				pr_field(sw->name, f, sep);
+				pr_field(sw->name, f, getsep);
 				continue;
 			}
 			if (p > argv[i] &&
@@ -212,8 +212,19 @@ main(int argc, char *argv[])
 			}
 			rd_field(f, p, do_merge);
 			f->flags |= FLG_SET;
-			(*sw->putval)(sw->name, sw->fd);
+			putval = (*sw->putval)(sw->name, sw->fd);
 			f->flags &= ~FLG_SET;
+			if (putval != 0 || f->flags & FLG_DEAD)
+				continue;
+			if (f->flags & FLG_WRONLY) {
+				pr_field(sw->name, f, setsep);
+			} else {
+				f->flags |= FLG_GET;
+				(*sw->getval)(sw->name, sw->fd);
+				if (f->flags & FLG_DEAD)
+					continue;
+				pr_field(sw->name, f, setsep);
+			}
 		}
 	} else
 		usage(NULL);
