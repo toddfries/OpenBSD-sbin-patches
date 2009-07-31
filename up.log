@@ -1,0 +1,29 @@
+Host key fingerprint is 3f:44:14:35:1b:65:cc:cb:da:17:6d:1d:e1:b4:a6:36
++--[ RSA 1024]----+
+|          oo++oo.|
+|         .   ==..|
+|          . .. =+|
+|         .    =.+|
+|        S .  E ..|
+|         o  o o .|
+|          o    . |
+|           .     |
+|                 |
++-----------------+
+
+ControlSocket /home/todd/.ssh/ctl-todd-cvs.openbsd.org-22 already exists, disabling multiplexing
+? .git
+? .gitignore
+? status.log
+? up.log
+P bioctl/bioctl.8
+P bioctl/bioctl.c
+P dhclient/clparse.c
+P dhclient/dhclient.c
+P disklabel/disklabel.8
+P fdisk/misc.c
+P newfs_msdos/newfs_msdos.8
+P newfs_msdos/newfs_msdos.c
+P pfctl/parse.y
+P route/route.c
+P wsconsctl/wsconsctl.c
