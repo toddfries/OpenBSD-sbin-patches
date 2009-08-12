@@ -3,10 +3,12 @@
 #   (use "git add <file>..." to update what will be committed)
 #   (use "git checkout -- <file>..." to discard changes in working directory)
 #
-#	modified:   ipsecctl/ike.c
-#	modified:   ipsecctl/ipsecctl.h
-#	modified:   ipsecctl/parse.y
+#	modified:   disklabel/editor.c
+#	modified:   disklabel/extern.h
+#	modified:   mount_msdos/mount_msdos.8
+#	modified:   route/show.c
 #	modified:   status.log
+#	modified:   sysctl/sysctl.c
 #	modified:   up.log
 #
 no changes added to commit (use "git add" and/or "git commit -a")

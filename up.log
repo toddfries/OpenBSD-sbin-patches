@@ -1,20 +1,9 @@
-Host key fingerprint is 3f:44:14:35:1b:65:cc:cb:da:17:6d:1d:e1:b4:a6:36
-+--[ RSA 1024]----+
-|          oo++oo.|
-|         .   ==..|
-|          . .. =+|
-|         .    =.+|
-|        S .  E ..|
-|         o  o o .|
-|          o    . |
-|           .     |
-|                 |
-+-----------------+
-
 ? .git
 ? .gitignore
 ? status.log
 ? up.log
-P ipsecctl/ike.c
-P ipsecctl/ipsecctl.h
-P ipsecctl/parse.y
+P disklabel/editor.c
+P disklabel/extern.h
+P mount_msdos/mount_msdos.8
+P route/show.c
+P sysctl/sysctl.c
