@@ -3,7 +3,5 @@
 ? status.log
 ? up.log
 P disklabel/editor.c
-P disklabel/extern.h
-P mount_msdos/mount_msdos.8
-P route/show.c
-P sysctl/sysctl.c
+P ifconfig/ifconfig.8
+P quotacheck/quotacheck.8
