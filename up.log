@@ -2,6 +2,4 @@
 ? .gitignore
 ? status.log
 ? up.log
-P disklabel/editor.c
-P ifconfig/ifconfig.8
-P quotacheck/quotacheck.8
+P pfctl/pfctl.c

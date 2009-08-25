@@ -3,9 +3,7 @@
 #   (use "git add <file>..." to update what will be committed)
 #   (use "git checkout -- <file>..." to discard changes in working directory)
 #
-#	modified:   disklabel/editor.c
-#	modified:   ifconfig/ifconfig.8
-#	modified:   quotacheck/quotacheck.8
+#	modified:   pfctl/pfctl.c
 #	modified:   status.log
 #	modified:   up.log
 #
