@@ -3,14 +3,11 @@
 #   (use "git add <file>..." to update what will be committed)
 #   (use "git checkout -- <file>..." to discard changes in working directory)
 #
-#	modified:   .gitignore
 #	modified:   pfctl/parse.y
-#	modified:   pfctl/pfctl.8
-#	modified:   pfctl/pfctl.c
-#	modified:   pfctl/pfctl_optimize.c
 #	modified:   pfctl/pfctl_parser.c
-#	modified:   pfctl/pfctl_parser.h
 #	modified:   status.log
+#	modified:   sysctl/sysctl.8
+#	modified:   sysctl/sysctl.c
 #	modified:   up.log
 #
 no changes added to commit (use "git add" and/or "git commit -a")

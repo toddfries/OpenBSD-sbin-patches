@@ -1,23 +1,8 @@
-Host key fingerprint is 3f:44:14:35:1b:65:cc:cb:da:17:6d:1d:e1:b4:a6:36
-+--[ RSA 1024]----+
-|          oo++oo.|
-|         .   ==..|
-|          . .. =+|
-|         .    =.+|
-|        S .  E ..|
-|         o  o o .|
-|          o    . |
-|           .     |
-|                 |
-+-----------------+
-
 ? .git
 ? .gitignore
 ? status.log
 ? up.log
 P pfctl/parse.y
-P pfctl/pfctl.8
-P pfctl/pfctl.c
-P pfctl/pfctl_optimize.c
 P pfctl/pfctl_parser.c
-P pfctl/pfctl_parser.h
+P sysctl/sysctl.8
+P sysctl/sysctl.c

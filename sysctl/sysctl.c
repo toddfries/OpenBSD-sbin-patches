@@ -1,4 +1,4 @@
-/*	$OpenBSD: sysctl.c,v 1.162 2009/08/12 12:26:51 kettenis Exp $	*/
+/*	$OpenBSD: sysctl.c,v 1.164 2009/09/08 17:52:17 michele Exp $	*/
 /*	$NetBSD: sysctl.c,v 1.9 1995/09/30 07:12:50 thorpej Exp $	*/
 
 /*
@@ -40,7 +40,7 @@ static const char copyright[] =
 #if 0
 static const char sccsid[] = "@(#)sysctl.c	8.5 (Berkeley) 5/9/95";
 #else
-static const char rcsid[] = "$OpenBSD: sysctl.c,v 1.162 2009/08/12 12:26:51 kettenis Exp $";
+static const char rcsid[] = "$OpenBSD: sysctl.c,v 1.164 2009/09/08 17:52:17 michele Exp $";
 #endif
 #endif /* not lint */
 
