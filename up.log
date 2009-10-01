@@ -2,7 +2,10 @@
 ? .gitignore
 ? status.log
 ? up.log
-P pfctl/parse.y
-P pfctl/pfctl_parser.c
-P sysctl/sysctl.8
-P sysctl/sysctl.c
+P disklabel/disklabel.c
+P disklabel/editor.c
+P pfctl/pfctl.8
+P pfctl/pfctl.c
+P route/route.c
+P wsconsctl/Makefile
+P wsconsctl/display.c
