@@ -3,14 +3,7 @@
 #   (use "git add <file>..." to update what will be committed)
 #   (use "git checkout -- <file>..." to discard changes in working directory)
 #
-#	modified:   disklabel/disklabel.c
-#	modified:   disklabel/editor.c
-#	modified:   pfctl/pfctl.8
-#	modified:   pfctl/pfctl.c
-#	modified:   route/route.c
 #	modified:   status.log
 #	modified:   up.log
-#	modified:   wsconsctl/Makefile
-#	modified:   wsconsctl/display.c
 #
 no changes added to commit (use "git add" and/or "git commit -a")
