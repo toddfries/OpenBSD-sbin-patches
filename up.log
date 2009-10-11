@@ -2,8 +2,4 @@
 ? .gitignore
 ? status.log
 ? up.log
-P ipsecctl/ike.c
-P pfctl/parse.y
-P pfctl/pfctl_parser.c
-P sysctl/sysctl.8
-P sysctl/sysctl.c
+P kbd/Makefile
