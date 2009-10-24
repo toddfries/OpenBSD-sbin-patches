@@ -5,8 +5,6 @@
 #
 #	modified:   bioctl/bioctl.8
 #	modified:   bioctl/bioctl.c
-#	modified:   ipsecctl/ipsec.conf.5
-#	modified:   ping/ping.8
 #	modified:   status.log
 #	modified:   up.log
 #

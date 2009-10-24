@@ -2,5 +2,5 @@
 ? .gitignore
 ? status.log
 ? up.log
-P ipsecctl/ipsec.conf.5
-P ping/ping.8
+P bioctl/bioctl.8
+P bioctl/bioctl.c
