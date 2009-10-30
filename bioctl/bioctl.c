@@ -974,11 +974,7 @@ derive_key_pkcs(int rounds, u_int8_t *key, size_t keysz, u_int8_t *salt,
 			errx(1, "invalid passphrase length");
 
 		fclose(f);
-<<<<<<< bioctl.c
-	} else if (password == NULL) {
-=======
 	} else {
->>>>>>> 1.84
 		if (readpassphrase("Passphrase: ", passphrase,
 		    sizeof(passphrase), RPP_REQUIRE_TTY) == NULL)
 			errx(1, "unable to read passphrase");

@@ -3,4 +3,3 @@
 ? status.log
 ? up.log
 ? bioctl/obj
-C bioctl/bioctl.c
