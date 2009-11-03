@@ -3,7 +3,11 @@
 #   (use "git add <file>..." to update what will be committed)
 #   (use "git checkout -- <file>..." to discard changes in working directory)
 #
-#	modified:   bioctl/bioctl.c
+#	modified:   ldattach/ldattach.c
+#	modified:   ping6/ping6.c
+#	modified:   route/keywords.h
+#	modified:   route/keywords.sh
+#	modified:   route/route.c
 #	modified:   status.log
 #	modified:   up.log
 #

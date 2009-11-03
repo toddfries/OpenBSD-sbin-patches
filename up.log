@@ -3,3 +3,8 @@
 ? status.log
 ? up.log
 ? bioctl/obj
+P ldattach/ldattach.c
+P ping6/ping6.c
+P route/keywords.h
+P route/keywords.sh
+P route/route.c
