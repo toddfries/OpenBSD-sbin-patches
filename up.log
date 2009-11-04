@@ -3,7 +3,4 @@
 ? status.log
 ? up.log
 ? bioctl/obj
-P pfctl/pf_print_state.c
-P pfctl/pfctl.h
-P pflogd/pflogd.8
-P pflogd/pflogd.c
+P route/route.8
