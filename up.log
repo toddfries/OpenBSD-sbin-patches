@@ -3,5 +3,4 @@
 ? status.log
 ? up.log
 ? bioctl/obj
-P pflogd/pflogd.8
-P route/route.8
+P sysctl/sysctl.c
