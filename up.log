@@ -3,8 +3,3 @@
 ? status.log
 ? up.log
 ? bioctl/obj
-P dhclient/dhclient.c
-P disklabel/editor.c
-P dump/main.c
-P raidctl/raidctl.c
-P scsi/libscsi.c
