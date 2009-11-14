@@ -3,3 +3,5 @@
 ? status.log
 ? up.log
 ? bioctl/obj
+P ipsecctl/pfkdump.c
+P isakmpd/ike_quick_mode.c
