@@ -3,5 +3,3 @@
 ? status.log
 ? up.log
 ? bioctl/obj
-P ifconfig/ifconfig.8
-P pflogd/Makefile
