@@ -1,4 +1,4 @@
-/*	$OpenBSD: pfctl_parser.c,v 1.256 2010/01/12 03:20:51 mcbride Exp $ */
+/*	$OpenBSD: pfctl_parser.c,v 1.261 2010/01/13 05:09:07 deraadt Exp $ */
 
 /*
  * Copyright (c) 2001 Daniel Hartmeier
@@ -401,8 +401,11 @@ print_pool(struct pf_pool *pool, u_int16_t p1, u_int16_t p2,
     sa_family_t af, int id, int verbose)
 {
 	if (pool->ifname[0]) {
-		print_addr(&pool->addr, af, verbose);
-		printf("@%s", pool->ifname);
+		if (!PF_AZERO(&pool->addr.v.a.addr, af)) {
+			print_addr(&pool->addr, af, verbose);
+			printf("@");
+		}
+		printf("%s", pool->ifname);
 	} else
 		print_addr(&pool->addr, af, verbose);
 	switch (id) {
@@ -1399,7 +1402,7 @@ host(const char *s)
 {
 	struct node_host	*h = NULL, *n;
 	int			 mask = -1, v4mask = 32, v6mask = 128, cont = 1;
-	char			*p, *q, *ps, *if_name;
+	char			*p, *q, *r, *ps, *if_name;
 
 	if ((ps = strdup(s)) == NULL)
 		err(1, "host: strdup");
@@ -1407,23 +1410,31 @@ host(const char *s)
 	if ((if_name = strrchr(ps, '@')) != NULL) {
 		if_name[0] = '\0';
 		if_name++;
-	} else if ((p = strrchr(ps, '/')) != NULL) {
+	} 
+
+	if ((p = strrchr(ps, '/')) != NULL) {
+		if ((r = strdup(ps)) == NULL)
+			err(1, "host: strdup");
 		mask = strtol(p+1, &q, 0);
 		if (!q || *q || mask > 128 || q == (p+1)) {
+			free(r);
 			fprintf(stderr, "invalid netmask '%s'\n", p);
 			return (NULL);
 		}
 		p[0] = '\0';
 		v4mask = v6mask = mask;
-	}
+	} else
+		r = ps;
 
 	/* interface with this name exists? */
 	if (cont && (h = host_if(ps, mask)) != NULL)
 		cont = 0;
 
 	/* IPv4 address? */
-	if (cont && (h = host_v4(s, mask)) != NULL)
+	if (cont && (h = host_v4(r, mask)) != NULL)
 		cont = 0;
+	if (r != ps)
+		free(r);
 
 	/* IPv6 address? */
 	if (cont && (h = host_v6(ps, v6mask)) != NULL)
@@ -1432,18 +1443,19 @@ host(const char *s)
 	/* dns lookup */
 	if (cont && (h = host_dns(ps, v4mask, v6mask)) != NULL)
 		cont = 0;
-	free(ps);
 
+	if (if_name && if_name[0])
+		for (n = h; n != NULL; n = n->next)
+			if ((n->ifname = strdup(if_name)) == NULL)
+				err(1, "host: strdup");
+
+	free(ps);	/* after we copy the name out */
 	if (h == NULL || cont == 1) {
 		fprintf(stderr, "no IP address found for %s\n", s);
 		return (NULL);
 	}
-	if (if_name)
-		for (n = h; n != NULL; n = n->next)
-			if ((h->ifname = strdup(if_name)) == NULL)
-				err(1, "host: strdup");
-
-	h->addr.type = PF_ADDR_ADDRMASK;
+	for (n = h; n != NULL; n = n->next)
+		n->addr.type = PF_ADDR_ADDRMASK;
 	return (h);
 }
 
