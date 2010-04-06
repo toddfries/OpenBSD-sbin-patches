@@ -1,4 +1,4 @@
-/*	$OpenBSD: editor.c,v 1.229 2010/03/25 14:35:58 sthen Exp $	*/
+/*	$OpenBSD: editor.c,v 1.231 2010/04/04 14:12:12 otto Exp $	*/
 
 /*
  * Copyright (c) 1997-2000 Todd C. Miller <Todd.Miller@courtesan.com>
@@ -149,7 +149,7 @@ void	display_edit(struct disklabel *, char, u_int64_t);
 static u_int64_t starting_sector;
 static u_int64_t ending_sector;
 static int expert;
-static int spoofed;
+static int overlap;
 
 /*
  * Simple partition editor.
@@ -372,12 +372,11 @@ editor(struct disklabel *lp, int f)
 			break;
 
 		case 'R':
-			if (aflag && !spoofed)
+			if (aflag && !overlap)
 				editor_resize(&label, arg);
 			else
 				fputs("Resize only implemented for auto "
-				    "allocated labels without spoofed "
-				    "partitions\n", stderr);
+				    "allocated labels\n", stderr);
 			break;
 
 		case 'r': {
@@ -523,15 +522,26 @@ editor_allocspace(struct disklabel *lp_org)
 	int i, j, lastalloc, index = 0, fragsize;
 	int64_t physmem;
 
-	spoofed = 0;
-	for (i = 0;  i < MAXPARTITIONS; i++)
-		if (i != RAW_PART && DL_GETPSIZE(&lp_org->d_partitions[i]) != 0)
-			spoofed = 1;
-
-	physmem = getphysmem() / lp_org->d_secsize;
-
 	/* How big is the OpenBSD portion of the disk?  */
 	find_bounds(lp_org);
+
+	overlap = 0;
+	for (i = 0;  i < MAXPARTITIONS; i++) {
+		daddr64_t psz, pstart, pend;
+
+		pp = &lp_org->d_partitions[i];
+		psz = DL_GETPSIZE(pp);
+		pstart = DL_GETPOFFSET(pp);
+		pend = pstart + psz;
+		if (i != RAW_PART && psz != 0 &&
+		    ((pstart >= starting_sector && pstart <= ending_sector) ||
+		    (pend > starting_sector && pend < ending_sector))) {
+			overlap = 1;
+			break;
+		}
+	}
+
+	physmem = getphysmem() / lp_org->d_secsize;
 
 	cylsecs = lp_org->d_secpercyl;
 again:
@@ -644,8 +654,10 @@ cylinderalign:
 		DL_SETPSIZE(pp, secs);
 		DL_SETPOFFSET(pp, chunkstart);
 		fragsize = 2048;
-		if (secs > 512ULL * 1024 * 1024 * 1024 / lp->d_secsize)
-			fragsize *= 4;
+		if (secs * lp->d_secsize > 128ULL * 1024 * 1024 * 1024)
+			fragsize *= 2;
+		if (secs * lp->d_secsize > 512ULL * 1024 * 1024 * 1024)
+			fragsize *= 2;
 #if defined (__sparc__) && !defined(__sparc64__)
 		/* can't boot from > 8k boot blocks */
 		pp->p_fragblock =
@@ -701,11 +713,19 @@ editor_resize(struct disklabel *lp, char *p)
 	}
 
 	pp = &label.d_partitions[partno];
-	sz = editor_countfree(lp);
+	sz = DL_GETPSIZE(pp);
+	if (sz == 0) {
+		fputs("No such partition\n", stderr);
+		return;
+	}
+	if (pp->p_fstype != FS_BSDFFS && pp->p_fstype != FS_SWAP) {
+		fputs("Cannot resize spoofed partition\n", stderr);
+		return;
+	}
 	secs = getuint(lp, "resize", "amount to grow (+) or shrink (-)",
-	    0, sz, 0, DO_CONVERSIONS);
+	    0, editor_countfree(lp), 0, DO_CONVERSIONS);
 
-	if (secs == 0) {
+	if (secs == 0 || secs == -1) {
 		fputs("Command aborted\n", stderr);
 		return;
 	}
@@ -717,12 +737,6 @@ editor_resize(struct disklabel *lp, char *p)
 	else
 		secs = ((secs - cylsecs + 1) / cylsecs) * cylsecs;
 #endif
-
-	sz = DL_GETPSIZE(pp);
-	if (sz == 0) {
-		fputs("No such partition\n", stderr);
-		return;
-	}
 	if (DL_GETPOFFSET(pp) + sz + secs > ending_sector) {
 		fputs("Amount too big\n", stderr);
 		return;
@@ -742,11 +756,13 @@ editor_resize(struct disklabel *lp, char *p)
 	for (i = partno + 1; i < MAXPARTITIONS; i++) {
 		if (i == RAW_PART)
 			continue;
-		sz = DL_GETPSIZE(&label.d_partitions[i]);
+		pp = &label.d_partitions[i];
+		if (pp->p_fstype != FS_BSDFFS && pp->p_fstype != FS_SWAP)
+			continue;
+		sz = DL_GETPSIZE(pp);
 		if (sz == 0)
 			continue;
 
-		pp = &label.d_partitions[i];
 		off = DL_GETPOFFSET(prev) + DL_GETPSIZE(prev);
 
 		if (off < ending_sector) {
@@ -856,26 +872,29 @@ editor_add(struct disklabel *lp, char *p)
 	DL_SETPSIZE(pp, new_size);
 	DL_SETPOFFSET(pp, new_offset);
 	pp->p_fstype = partno == 1 ? FS_SWAP : FS_BSDFFS;
-	fragsize = 2048;
-	if (new_size > 512ULL * 1024 * 1024 * 1024 / lp->d_secsize)
-		fragsize *= 4;
-#if defined (__sparc__) && !defined(__sparc64__)
-	/* can't boot from > 8k boot blocks */
-	pp->p_fragblock =
-	    DISKLABELV1_FFS_FRAGBLOCK(partno == 0 ? 1024 : fragsize, 8);
-#else
-	pp->p_fragblock = DISKLABELV1_FFS_FRAGBLOCK(fragsize, 8);
-#endif
 	pp->p_cpg = 1;
 
 	if (get_offset(lp, partno) == 0 &&
-	    get_size(lp, partno) == 0   &&
-	    get_fstype(lp, partno) == 0 &&
-	    get_mp(lp, partno) == 0 &&
-	    get_fsize(lp, partno) == 0  &&
-	    get_bsize(lp, partno) == 0)
-		return;
-
+	    get_size(lp, partno) == 0) {
+		fragsize = 2048;
+		new_size = DL_GETPSIZE(pp) * lp->d_secsize;
+		if (new_size > 128ULL * 1024 * 1024 * 1024)
+			fragsize *= 2;
+		if (new_size > 512ULL * 1024 * 1024 * 1024)
+			fragsize *= 2;
+#if defined (__sparc__) && !defined(__sparc64__)
+		/* can't boot from > 8k boot blocks */
+		pp->p_fragblock =
+		    DISKLABELV1_FFS_FRAGBLOCK(partno == 0 ? 1024 : fragsize, 8);
+#else
+		pp->p_fragblock = DISKLABELV1_FFS_FRAGBLOCK(fragsize, 8);
+#endif
+		if (get_fstype(lp, partno) == 0 &&
+		    get_mp(lp, partno) == 0 &&
+		    get_fsize(lp, partno) == 0  &&
+		    get_bsize(lp, partno) == 0)
+			return;
+	}
 	/* Bailed out at some point, so effectively delete the partition. */
 	DL_SETPSIZE(pp, 0);
 }
@@ -1820,7 +1839,7 @@ editor_help(char *arg)
 		puts(
 "Resize a a partition, compacting unused space between partitions\n"
 "with a higher offset. The last partition will be shrunk if needed.\n"
-"Works only for auto allocated labels with no spoofed partitions\n");
+"Works only for auto allocated labels.\n");
 		break;
 	case 'r':
 		puts(

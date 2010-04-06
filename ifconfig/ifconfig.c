@@ -1,4 +1,4 @@
-/*	$OpenBSD: ifconfig.c,v 1.228 2010/01/10 03:58:14 guenther Exp $	*/
+/*	$OpenBSD: ifconfig.c,v 1.231 2010/04/06 14:12:10 stsp Exp $	*/
 /*	$NetBSD: ifconfig.c,v 1.40 1997/10/01 02:19:43 enami Exp $	*/
 
 /*
@@ -338,6 +338,8 @@ const struct	cmd {
 	{ "pltime",	NEXTARG,	0,		setia6pltime },
 	{ "vltime",	NEXTARG,	0,		setia6vltime },
 	{ "eui64",	0,		0,		setia6eui64 },
+	{ "autoconfprivacy",	IFXF_INET6_PRIVACY,	0,	setifxflags },
+	{ "-autoconfprivacy",	-IFXF_INET6_PRIVACY,	0,	setifxflags },
 #endif /*INET6*/
 #ifndef SMALL
 	{ "rtlabel",	NEXTARG,	0,		setifrtlabel },
@@ -1188,6 +1190,12 @@ void
 setifxflags(const char *vname, int value)
 {
 	struct ifreq my_ifr;
+
+	if ((value == IFXF_INET6_PRIVACY || value == -IFXF_INET6_PRIVACY)
+	    && afp->af_af != AF_INET6) {
+		errx(1, "autoconfprivacy needs AF inet6, current AF is `%s'",
+		    afp->af_name);
+	}
 
 	bcopy((char *)&ifr, (char *)&my_ifr, sizeof(struct ifreq));
 
@@ -2981,6 +2989,8 @@ in6_alias(struct in6_ifreq *creq)
 			printf(" deprecated");
 		if (ifr6.ifr_ifru.ifru_flags6 & IN6_IFF_AUTOCONF)
 			printf(" autoconf");
+		if (ifr6.ifr_ifru.ifru_flags6 & IN6_IFF_PRIVACY)
+			printf(" autoconfprivacy");
 	}
 
 	if (scopeid)
@@ -4733,12 +4743,19 @@ sec2str(time_t total)
 void
 setiflladdr(const char *addr, int param)
 {
-	struct ether_addr *eap;
+	struct ether_addr *eap, eabuf;
 
-	eap = ether_aton(addr);
-	if (eap == NULL) {
-		warnx("malformed link-level address");
-		return;
+	if (!strcmp(addr, "random")) {
+		arc4random_buf(&eabuf, sizeof eabuf);
+		/* Non-multicast and claim it is a hardware address */
+		eabuf.ether_addr_octet[0] &= 0xfc;
+		eap = &eabuf;
+	} else {
+		eap = ether_aton(addr);
+		if (eap == NULL) {
+			warnx("malformed link-level address");
+			return;
+		}
 	}
 	strlcpy(ifr.ifr_name, name, sizeof(ifr.ifr_name));
 	ifr.ifr_addr.sa_len = ETHER_ADDR_LEN;
