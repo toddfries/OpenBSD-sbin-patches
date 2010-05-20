@@ -1,4 +1,4 @@
-/*	$OpenBSD: route.c,v 1.142 2010/03/23 15:01:50 claudio Exp $	*/
+/*	$OpenBSD: route.c,v 1.144 2010/05/19 13:11:25 claudio Exp $	*/
 /*	$NetBSD: route.c,v 1.16 1996/04/15 18:27:05 cgd Exp $	*/
 
 /*
@@ -81,7 +81,7 @@ int	locking, lockrest, debugonly;
 u_long	mpls_flags = MPLS_OP_LOCAL;
 u_long	rtm_inits;
 uid_t	uid;
-u_int	tableid = 0;
+u_int	tableid;
 
 struct rt_metrics	rt_metrics;
 
@@ -109,8 +109,8 @@ void	 set_metric(char *, int);
 void	 inet_makenetandmask(u_int32_t, struct sockaddr_in *, int);
 void	 interfaces(void);
 void	 getlabel(char *);
-int	 gettable(const char *);
-int	 rdomain(int, int, char **);
+void	 gettable(const char *);
+int	 rdomain(int, char **);
 
 __dead void
 usage(char *cp)
@@ -136,7 +136,6 @@ main(int argc, char **argv)
 {
 	int ch;
 	int rval = 0;
-	int rtableid = 1;
 	int kw;
 
 	if (argc < 2)
@@ -157,7 +156,7 @@ main(int argc, char **argv)
 			tflag = 1;
 			break;
 		case 'T':
-			rtableid = gettable(optarg);
+			gettable(optarg);
 			break;
 		case 'd':
 			debugonly = 1;
@@ -192,7 +191,7 @@ main(int argc, char **argv)
 	}
 	switch (kw) {
 	case K_EXEC:
-		rval = rdomain(rtableid, argc - 1, argv + 1);
+		rval = rdomain(argc - 1, argv + 1);
 		break;
 	case K_GET:
 		uid = 0;
@@ -424,6 +423,7 @@ newroute(int argc, char **argv)
 			case K_MPLS:
 				af = AF_MPLS;
 				aflen = sizeof(struct sockaddr_mpls);
+				fmask |= RTF_MPLS;
 				break;
 			case K_MPLSLABEL:
 				if (!--argc)
@@ -433,6 +433,7 @@ newroute(int argc, char **argv)
 					    "-inet or -inet6");
 				getmplslabel(*++argv, 0);
 				mpls_flags = MPLS_OP_PUSH;
+				flags |= RTF_MPLS;
 				break;
 			case K_IN:
 				if (!--argc)
@@ -450,6 +451,7 @@ newroute(int argc, char **argv)
 					errx(1, "-out requires -push, -pop, "
 					    "-swap");
 				getmplslabel(*++argv, 0);
+				flags |= RTF_MPLS;
 				break;
 			case K_POP:
 				if (af != AF_MPLS)
@@ -1601,7 +1603,7 @@ getlabel(char *name)
 	rtm_addrs |= RTA_LABEL;
 }
 
-int
+void
 gettable(const char *s)
 {
 	const char	*errstr;
@@ -1609,15 +1611,14 @@ gettable(const char *s)
 	tableid = strtonum(s, 0, RT_TABLEID_MAX, &errstr);
 	if (errstr)
 		errx(1, "invalid table id: %s", errstr);
-	return (tableid);
 }
 
 int
-rdomain(int rtableid, int argc, char **argv)
+rdomain(int argc, char **argv)
 {
 	if (!argc)
 		usage(NULL);
-	if (setrdomain(rtableid) == -1)
+	if (setrdomain(tableid) == -1)
 		err(1, "setrdomain");
 	execvp(*argv, argv);
 	return (errno == ENOENT ? 127 : 126);
