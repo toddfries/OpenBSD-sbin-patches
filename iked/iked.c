@@ -1,4 +1,4 @@
-/*	$OpenBSD: iked.c,v 1.2 2010/06/07 10:07:44 jmc Exp $	*/
+/*	$OpenBSD: iked.c,v 1.5 2010/06/10 14:18:26 reyk Exp $	*/
 /*	$vantronix: iked.c,v 1.22 2010/06/02 14:43:30 reyk Exp $	*/
 
 /*
@@ -65,7 +65,7 @@ usage(void)
 {
 	extern char	*__progname;
 
-	fprintf(stderr, "usage: %s [-dnTv] [-D macro=value] "
+	fprintf(stderr, "usage: %s [-dnSTv] [-D macro=value] "
 	    "[-f file]\n", __progname);
 	exit(1);
 }
@@ -81,7 +81,7 @@ main(int argc, char *argv[])
 
 	log_init(1);
 
-	while ((c = getopt(argc, argv, "dD:nf:vT")) != -1) {
+	while ((c = getopt(argc, argv, "dD:nf:vST")) != -1) {
 		switch (c) {
 		case 'd':
 			debug++;
@@ -103,6 +103,9 @@ main(int argc, char *argv[])
 		case 'v':
 			verbose++;
 			opts |= IKED_OPT_VERBOSE;
+			break;
+		case 'S':
+			opts |= IKED_OPT_PASSIVE;
 			break;
 		case 'T':
 			opts |= IKED_OPT_NONATT;
@@ -205,6 +208,9 @@ parent_configure(struct iked *env)
 	config_setsocket(env, &ss, ntohs(IKED_IKE_PORT), PROC_IKEV2);
 	config_setsocket(env, &ss, ntohs(IKED_NATT_PORT), PROC_IKEV2);
 
+	config_setcoupled(env, env->sc_decoupled ? 0 : 1);
+	config_setmode(env, env->sc_passive ? 1 : 0);
+
 	return (0);
 }
 
@@ -226,6 +232,9 @@ parent_reload(struct iked *env, int reset, const char *filename)
 			log_debug("%s: failed to load config file %s",
 			    __func__, filename);
 		}
+
+		config_setcoupled(env, env->sc_decoupled ? 0 : 1);
+		config_setmode(env, env->sc_passive ? 1 : 0);
 	} else {
 		config_setreset(env, reset, PROC_IKEV1);
 		config_setreset(env, reset, PROC_IKEV2);
@@ -326,12 +335,20 @@ parent_dispatch_ca(int fd, struct iked_proc *p, struct imsg *imsg)
 	struct iked	*env = p->env;
 	int		 v;
 	char		*str = NULL;
+	u_int		 type = imsg->hdr.type;
 
-	switch (imsg->hdr.type) {
+	switch (type) {
 	case IMSG_CTL_RESET:
 		IMSG_SIZE_CHECK(imsg, &v);
 		memcpy(&v, imsg->data, sizeof(v));
 		parent_reload(env, v, NULL);
+		return (0);
+	case IMSG_CTL_COUPLE:
+	case IMSG_CTL_DECOUPLE:
+	case IMSG_CTL_ACTIVE:
+	case IMSG_CTL_PASSIVE:
+		imsg_compose_proc(env, PROC_IKEV1, type, -1, NULL, 0);
+		imsg_compose_proc(env, PROC_IKEV2, type, -1, NULL, 0);
 		return (0);
 	case IMSG_CTL_RELOAD:
 		if (IMSG_DATA_SIZE(imsg) > 0)

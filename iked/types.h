@@ -1,4 +1,4 @@
-/*	$OpenBSD: types.h,v 1.3 2010/06/07 14:15:27 jsg Exp $	*/
+/*	$OpenBSD: types.h,v 1.5 2010/06/10 14:17:48 reyk Exp $	*/
 /*	$vantronix: types.h,v 1.24 2010/05/11 12:05:56 reyk Exp $	*/
 
 /*
@@ -39,6 +39,7 @@
 #define IKED_OPT_VERBOSE	0x00000001
 #define IKED_OPT_NOACTION	0x00000002
 #define IKED_OPT_NONATT		0x00000004
+#define IKED_OPT_PASSIVE	0x00000008
 
 #define IKED_IKE_PORT		500
 #define IKED_NATT_PORT		4500
@@ -79,6 +80,10 @@ enum imsg_type {
 	IMSG_CTL_NOTIFY,
 	IMSG_CTL_RELOAD,
 	IMSG_CTL_RESET,
+	IMSG_CTL_COUPLE,
+	IMSG_CTL_DECOUPLE,
+	IMSG_CTL_ACTIVE,
+	IMSG_CTL_PASSIVE,
 	IMSG_UDP_SOCKET,
 	IMSG_PFKEY_SOCKET,
 	IMSG_IKE_MESSAGE,

@@ -1,4 +1,4 @@
-/*	$OpenBSD: config.c,v 1.1 2010/06/03 16:41:12 reyk Exp $	*/
+/*	$OpenBSD: config.c,v 1.3 2010/06/10 14:08:37 reyk Exp $	*/
 /*	$vantronix: config.c,v 1.30 2010/05/28 15:34:35 reyk Exp $	*/
 
 /*
@@ -90,7 +90,10 @@ config_free_sa(struct iked *env, struct iked_sa *sa)
 	config_free_childsas(env, &sa->sa_childsas, NULL, NULL);
 	config_free_flows(env, &sa->sa_flows, NULL);
 
-	policy_unref(env, sa->sa_policy);
+	if (sa->sa_policy) {
+		(void)RB_REMOVE(iked_sapeers, &sa->sa_policy->pol_sapeers, sa);
+		policy_unref(env, sa->sa_policy);
+	}
 
 	ibuf_release(sa->sa_inonce);
 	ibuf_release(sa->sa_rnonce);
@@ -137,6 +140,7 @@ config_new_policy(struct iked *env)
 		return (NULL);
 
 	TAILQ_INIT(&pol->pol_proposals);
+	RB_INIT(&pol->pol_sapeers);
 
 	if (env != NULL)
 		RB_INSERT(iked_policies, &env->sc_policies, pol);
@@ -147,14 +151,14 @@ config_new_policy(struct iked *env)
 void
 config_free_policy(struct iked *env, struct iked_policy *pol)
 {
-	struct iked_sa	*sa;
+	struct iked_sa		*sa;
 
 	if (pol->pol_flags & IKED_POLICY_REFCNT)
 		goto remove;
 
 	(void)RB_REMOVE(iked_policies, &env->sc_policies, pol);
 
-	RB_FOREACH(sa, iked_sas, &env->sc_sas) {
+	RB_FOREACH(sa, iked_sapeers, &pol->pol_sapeers) {
 		/* Remove from the policy tree, but keep for existing SAs */
 		if (sa->sa_policy == pol)
 			policy_ref(env, pol);
@@ -383,6 +387,55 @@ config_new_user(struct iked *env, struct iked_user *new)
 /*
  * Inter-process communication of configuration items.
  */
+
+int
+config_setcoupled(struct iked *env, u_int couple)
+{
+	u_int	 type;
+
+	type = couple ? IMSG_CTL_COUPLE : IMSG_CTL_DECOUPLE;
+	imsg_compose_proc(env, PROC_IKEV1, type, -1, NULL, 0);
+	imsg_compose_proc(env, PROC_IKEV2, type, -1, NULL, 0);
+
+	return (0);
+}
+
+int
+config_getcoupled(struct iked *env, u_int type)
+{
+	return (pfkey_couple(env->sc_pfkey, &env->sc_sas,
+	    type == IMSG_CTL_COUPLE ? 1 : 0));
+}
+
+int
+config_setmode(struct iked *env, u_int passive)
+{
+	u_int	 type;
+
+	type = passive ? IMSG_CTL_PASSIVE : IMSG_CTL_ACTIVE;
+	imsg_compose_proc(env, PROC_IKEV1, type, -1, NULL, 0);
+	imsg_compose_proc(env, PROC_IKEV2, type, -1, NULL, 0);
+
+	return (0);
+}
+
+int
+config_getmode(struct iked *env, u_int type)
+{
+	u_int8_t	 old;
+	u_char		*mode[] = { "active", "passive" };
+
+	old = env->sc_passive ? 1 : 0;
+	env->sc_passive = type == IMSG_CTL_PASSIVE ? 1 : 0;
+
+	if (old == env->sc_passive)
+		return (0);
+
+	log_debug("%s: mode %s -> %s", __func__,
+	    mode[old], mode[env->sc_passive]);
+
+	return (0);
+}
 
 int
 config_setreset(struct iked *env, u_int mode, enum iked_procid id)

@@ -1,4 +1,4 @@
-/*	$OpenBSD: ca.c,v 1.1 2010/06/03 16:41:12 reyk Exp $	*/
+/*	$OpenBSD: ca.c,v 1.3 2010/06/10 14:09:19 jsg Exp $	*/
 /*	$vantronix: ca.c,v 1.29 2010/06/02 12:22:58 reyk Exp $	*/
 
 /*
@@ -252,7 +252,7 @@ ca_setauth(struct iked *env, struct iked_sa *sa,
 
 	if (type == IKEV2_AUTH_SHARED_KEY_MIC) {
 		sa->sa_stateflags |= IKED_REQ_AUTH;
-		return (ikev2_message_authsign(env, sa,
+		return (ikev2_msg_authsign(env, sa,
 		    &policy->pol_auth, authmsg));
 	}
 
@@ -423,7 +423,7 @@ ca_getauth(struct iked *env, struct imsg *imsg)
 		id = &sa.sa_rcert;
 	memcpy(id, &store->ca_privkey, sizeof(*id));
 
-	if (ikev2_message_authsign(env, &sa, &policy.pol_auth, authmsg) != 0) {
+	if (ikev2_msg_authsign(env, &sa, &policy.pol_auth, authmsg) != 0) {
 		log_debug("%s: AUTH sign failed", __func__);
 		policy.pol_auth.auth_method = IKEV2_AUTH_NONE;
 	}
@@ -776,13 +776,13 @@ ca_validate_cert(struct iked *env, struct iked_static_id *id,
 			goto done;
 	}
 
+	bzero(&csc, sizeof(csc));
 	X509_STORE_CTX_init(&csc, store->ca_cas, cert, NULL);
 	if (store->ca_cas->param->flags & X509_V_FLAG_CRL_CHECK) {
 		X509_STORE_CTX_set_flags(&csc, X509_V_FLAG_CRL_CHECK);
 		X509_STORE_CTX_set_flags(&csc, X509_V_FLAG_CRL_CHECK_ALL);
 	}
 
-	bzero(&csc, sizeof(csc));
 	result = X509_verify_cert(&csc);
 	error = csc.error;
 	X509_STORE_CTX_cleanup(&csc);

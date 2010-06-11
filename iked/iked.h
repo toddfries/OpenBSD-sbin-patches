@@ -1,4 +1,4 @@
-/*	$OpenBSD: iked.h,v 1.1 2010/06/03 16:41:12 reyk Exp $	*/
+/*	$OpenBSD: iked.h,v 1.4 2010/06/10 14:08:37 reyk Exp $	*/
 /*	$vantronix: iked.h,v 1.61 2010/06/03 07:57:33 reyk Exp $	*/
 
 /*
@@ -27,6 +27,21 @@
 
 #ifndef _IKED_H
 #define _IKED_H
+
+/*
+ * Common IKEv1/IKEv2 header
+ */
+
+struct ike_header {
+	u_int64_t	 ike_ispi;		/* Initiator cookie */
+	u_int64_t	 ike_rspi;		/* Responder cookie */
+	u_int8_t	 ike_nextpayload;	/* Next payload type */
+	u_int8_t	 ike_version;		/* Major/Minor version number */
+	u_int8_t	 ike_exchange;		/* Exchange type */
+	u_int8_t	 ike_flags;		/* Message options */
+	u_int32_t	 ike_msgid;		/* Message identifier */
+	u_int32_t	 ike_length;		/* Total message length */
+} __packed;
 
 /*
  * Common daemon infrastructure, local imsg etc.
@@ -171,6 +186,8 @@ struct iked_cfg {
 	} cfg;
 };
 
+RB_HEAD(iked_sapeers, iked_sa);
+
 struct iked_policy {
 	u_int				 pol_id;
 	char				 pol_name[IKED_ID_SIZE];
@@ -209,6 +226,8 @@ struct iked_policy {
 
 	struct iked_cfg			 pol_cfg[IKED_CFG_MAX];
 	u_int				 pol_ncfg;
+
+	struct iked_sapeers		 pol_sapeers;
 
 	RB_ENTRY(iked_policy)		 pol_entry;
 };
@@ -329,6 +348,7 @@ struct iked_sa {
 	struct iked_flows		 sa_flows;	/* IPSec flows */
 	u_int8_t			 sa_flowhash[20]; /* SHA1 */
 
+	RB_ENTRY(iked_sa)		 sa_peer_entry;
 	RB_ENTRY(iked_sa)		 sa_entry;
 };
 RB_HEAD(iked_sas, iked_sa);
@@ -377,6 +397,8 @@ struct iked {
 	char				 sc_conffile[MAXPATHLEN];
 
 	u_int32_t			 sc_opts;
+	u_int8_t			 sc_passive;
+	u_int8_t			 sc_decoupled;
 
 	int				 sc_pipes[PROC_MAX][PROC_MAX];
 	struct imsgev			 sc_ievs[PROC_MAX];
@@ -453,6 +475,10 @@ void	 config_free_childsas(struct iked *, struct iked_childsas *,
 struct iked_transform *
 	 config_add_transform(struct iked_proposal *,
 	    u_int, u_int, u_int, u_int);
+int	 config_setcoupled(struct iked *, u_int);
+int	 config_getcoupled(struct iked *, u_int);
+int	 config_setmode(struct iked *, u_int);
+int	 config_getmode(struct iked *, u_int);
 int	 config_setreset(struct iked *, u_int, enum iked_procid);
 int	 config_getreset(struct iked *, struct imsg *);
 int	 config_setpolicy(struct iked *, struct iked_policy *,
@@ -479,14 +505,19 @@ struct iked_sa *
 	 sa_new(struct iked *, u_int64_t, u_int64_t, u_int,
 	    struct iked_policy *);
 void	 sa_free(struct iked *, struct iked_sa *);
+int	 sa_address(struct iked_sa *, struct iked_addr *,
+	    struct sockaddr_storage *);
 void	 childsa_free(struct iked_childsa *);
 void	 flow_free(struct iked_flow *);
 struct iked_sa *
 	 sa_lookup(struct iked *, u_int64_t, u_int64_t, u_int);
+struct iked_sa *
+	 sa_peer_lookup(struct iked_policy *, struct sockaddr_storage *);
 struct iked_user *
 	 user_lookup(struct iked *, const char *);
 RB_PROTOTYPE(iked_policies, iked_policy, pol_entry, policy_cmp);
 RB_PROTOTYPE(iked_sas, iked_sa, sa_entry, sa_cmp);
+RB_PROTOTYPE(iked_sapeers, iked_sa, sa_peer_entry, sa_peer_cmp);
 RB_PROTOTYPE(iked_users, iked_user, user_entry, user_cmp);
 
 /* crypto.c */
@@ -538,20 +569,65 @@ pid_t	 ikev1(struct iked *, struct iked_proc *);
 
 /* ikev2.c */
 pid_t	 ikev2(struct iked *, struct iked_proc *);
-int	 ikev2_send_ike_e(struct iked *, struct iked_sa *, struct ibuf *,
-	    u_int8_t, u_int8_t, int);
-int	 ikev2_message_authsign(struct iked *, struct iked_sa *,
-	    struct iked_auth *, struct ibuf *);
+void	 ikev2_recv(struct iked *, struct iked_message *);
+int	 ikev2_sa_negotiate(struct iked_sa *, struct iked_proposals *,
+	    struct iked_proposals *, u_int8_t);
+int	 ikev2_childsa_delete(struct iked *, struct iked_sa *,
+	    u_int8_t, u_int64_t, u_int64_t *, int);
 struct ibuf *
 	 ikev2_prfplus(struct iked_hash *, struct ibuf *, struct ibuf *,
 	    size_t);
 ssize_t	 ikev2_psk(struct iked_sa *, u_int8_t *, size_t, u_int8_t **);
+ssize_t	 ikev2_nat_detection(struct iked_message *, void *, size_t,
+	    u_int, int);
+int	 ikev2_send_informational(struct iked *, struct iked_message *);
+int	 ikev2_send_ike_e(struct iked *, struct iked_sa *, struct ibuf *,
+	    u_int8_t, u_int8_t, int);
+struct ike_header *
+	 ikev2_add_header(struct ibuf *, struct iked_sa *,
+	    u_int32_t, u_int8_t, u_int8_t, u_int8_t);
+int	 ikev2_set_header(struct ike_header *, size_t);
+struct ikev2_payload *
+	 ikev2_add_payload(struct ibuf *);
+int	 ikev2_next_payload(struct ikev2_payload *, size_t,
+	    u_int8_t);
+
+/* ikev2_msg.c */
+void	 ikev2_msg_cb(int, short, void *);
+struct ibuf *
+	 ikev2_msg_init(struct iked *, struct iked_message *,
+	    struct sockaddr_storage *, socklen_t,
+	    struct sockaddr_storage *, socklen_t, int);
+u_int32_t
+	 ikev2_msg_id(struct iked *, struct iked_sa *, int);
+struct ibuf
+	*ikev2_msg_auth(struct iked *, struct iked_sa *, int);
+int	 ikev2_msg_authsign(struct iked *, struct iked_sa *,
+	    struct iked_auth *, struct ibuf *);
+int	 ikev2_msg_authverify(struct iked *, struct iked_sa *,
+	    struct iked_auth *, u_int8_t *, size_t, struct ibuf *);
+int	 ikev2_msg_valid_ike_sa(struct iked *, struct ike_header *,
+	    struct iked_message *);
+int	 ikev2_msg_send(struct iked *, int, struct iked_message *);
+int	 ikev2_msg_send_encrypt(struct iked *, struct iked_sa *,
+	    struct ibuf **, u_int8_t, u_int8_t, int);
+struct ibuf
+	*ikev2_msg_encrypt(struct iked *, struct iked_sa *, struct ibuf *);
+struct ibuf *
+	 ikev2_msg_decrypt(struct iked *, struct iked_sa *,
+	    struct ibuf *, struct ibuf *);
+int	 ikev2_msg_integr(struct iked *, struct iked_sa *, struct ibuf *);
+
+/* ikev2_pld.c */
+int	 ikev2_pld_parse(struct iked *, struct ike_header *,
+	    struct iked_message *, off_t);
 
 /* eap.c */
 ssize_t	 eap_identity_request(struct ibuf *);
 int	 eap_parse(struct iked *, struct iked_sa *, void *, int);
 
 /* pfkey.c */
+int	 pfkey_couple(int, struct iked_sas *, int);
 int	 pfkey_flow_add(int fd, struct iked_flow *);
 int	 pfkey_flow_delete(int fd, struct iked_flow *);
 int	 pfkey_sa_init(int, struct iked_childsa *, u_int32_t *);
