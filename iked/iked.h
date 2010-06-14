@@ -1,4 +1,4 @@
-/*	$OpenBSD: iked.h,v 1.5 2010/06/11 12:47:18 reyk Exp $	*/
+/*	$OpenBSD: iked.h,v 1.9 2010/06/14 14:03:15 reyk Exp $	*/
 /*	$vantronix: iked.h,v 1.61 2010/06/03 07:57:33 reyk Exp $	*/
 
 /*
@@ -292,6 +292,10 @@ struct iked_sa {
 	struct iked_sahdr		 sa_hdr;
 	u_int32_t			 sa_msgid;
 
+	int				 sa_type;
+#define IKED_SATYPE_LOOKUP		 0		/* Used for lookup */
+#define IKED_SATYPE_LOCAL		 1		/* Local SA */
+
 	struct iked_addr		 sa_peer;
 	struct iked_addr		 sa_local;
 	int				 sa_fd;
@@ -376,6 +380,8 @@ struct iked_message {
 	/* Parsed information */
 	struct iked_proposals	 msg_proposals;
 	struct iked_spi		 msg_rekey;
+	struct ibuf		*msg_nonce;	/* dh NONCE */
+	struct ibuf		*msg_ke;	/* dh key exchange */
 
 	/* Parse stack */
 	struct iked_proposal	*msg_prop;
@@ -417,6 +423,9 @@ struct iked {
 	int				 sc_pfkey;	/* ike process */
 	u_int8_t			 sc_certreqtype;
 	struct ibuf			*sc_certreq;
+
+	struct iked_socket		*sc_sock4;
+	struct iked_socket		*sc_sock6;
 
 	struct control_sock		 sc_csock;
 
@@ -572,14 +581,14 @@ pid_t	 ikev2(struct iked *, struct iked_proc *);
 void	 ikev2_recv(struct iked *, struct iked_message *);
 int	 ikev2_sa_negotiate(struct iked_sa *, struct iked_proposals *,
 	    struct iked_proposals *, u_int8_t);
+int	 ikev2_policy2id(struct iked_static_id *, struct iked_id *, int);
 int	 ikev2_childsa_delete(struct iked *, struct iked_sa *,
 	    u_int8_t, u_int64_t, u_int64_t *, int);
 struct ibuf *
 	 ikev2_prfplus(struct iked_hash *, struct ibuf *, struct ibuf *,
 	    size_t);
 ssize_t	 ikev2_psk(struct iked_sa *, u_int8_t *, size_t, u_int8_t **);
-ssize_t	 ikev2_nat_detection(struct iked_message *, void *, size_t,
-	    u_int, int);
+ssize_t	 ikev2_nat_detection(struct iked_message *, void *, size_t, u_int);
 int	 ikev2_send_informational(struct iked *, struct iked_message *);
 int	 ikev2_send_ike_e(struct iked *, struct iked_sa *, struct ibuf *,
 	    u_int8_t, u_int8_t, int);
@@ -598,6 +607,7 @@ struct ibuf *
 	 ikev2_msg_init(struct iked *, struct iked_message *,
 	    struct sockaddr_storage *, socklen_t,
 	    struct sockaddr_storage *, socklen_t, int);
+void	 ikev2_msg_cleanup(struct iked *, struct iked_message *);
 u_int32_t
 	 ikev2_msg_id(struct iked *, struct iked_sa *, int);
 struct ibuf
@@ -617,6 +627,9 @@ struct ibuf *
 	 ikev2_msg_decrypt(struct iked *, struct iked_sa *,
 	    struct ibuf *, struct ibuf *);
 int	 ikev2_msg_integr(struct iked *, struct iked_sa *, struct ibuf *);
+int	 ikev2_msg_frompeer(struct iked_message *);
+struct iked_socket *
+	 ikev2_msg_getsocket(struct iked *, int);
 
 /* ikev2_pld.c */
 int	 ikev2_pld_parse(struct iked *, struct ike_header *,
@@ -651,7 +664,7 @@ char	*ca_x509_name(void *);
 
 /* timer.c */
 void	 timer_register_initiator(struct iked *,
-	    void (*)(struct iked *, struct iked_policy *));
+	    int (*)(struct iked *, struct iked_policy *));
 void	 timer_unregister_initiator(struct iked *);
 
 /* proc.c */
@@ -705,7 +718,6 @@ char	*get_string(u_int8_t *, size_t);
 int	 print_id(struct iked_id *, off_t, char *, size_t);
 const char *
 	 print_proto(u_int8_t);
-void	 message_cleanup(struct iked *, struct iked_message *);
 int	 expand_string(char *, size_t, const char *, const char *);
 u_int8_t *string2unicode(const char *, size_t *);
 

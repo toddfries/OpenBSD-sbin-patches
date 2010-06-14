@@ -1,4 +1,4 @@
-/*	$OpenBSD: ikev2_pld.c,v 1.1 2010/06/10 08:29:47 reyk Exp $	*/
+/*	$OpenBSD: ikev2_pld.c,v 1.5 2010/06/14 14:03:15 reyk Exp $	*/
 /*	$vantronix: ikev2.c,v 1.101 2010/06/03 07:57:33 reyk Exp $	*/
 
 /*
@@ -199,7 +199,7 @@ ikev2_pld_payloads(struct iked *env, struct iked_message *msg,
 			break;
 		}
 
-		if (ret != 0 && !msg->msg_response) {
+		if (ret != 0 && ikev2_msg_frompeer(msg)) {
 			(void)ikev2_send_informational(env, msg);
 			return (-1);
 		}
@@ -228,7 +228,12 @@ ikev2_pld_sa(struct iked *env, struct ikev2_payload *pld,
 	u_int32_t			 spi32;
 	u_int64_t			 spi = 0, spi64;
 	u_int8_t			*msgbuf = ibuf_data(msg->msg_data);
-	struct iked_sa			*sa = msg->msg_sa;
+	struct iked_proposals		*props;
+
+	if (msg->msg_decrypted)
+		props = &msg->msg_decrypted->msg_proposals;
+	else
+		props = &msg->msg_proposals;
 
 	memcpy(&sap, msgbuf + offset, sizeof(sap));
 	offset += sizeof(sap);
@@ -259,8 +264,8 @@ ikev2_pld_sa(struct iked *env, struct ikev2_payload *pld,
 	    print_map(sap.sap_protoid, ikev2_saproto_map), sap.sap_spisize,
 	    sap.sap_transforms, print_spi(spi, sap.sap_spisize));
 
-	if (!msg->msg_response) {
-		if ((msg->msg_prop = config_add_proposal(&msg->msg_proposals,
+	if (ikev2_msg_frompeer(msg)) {
+		if ((msg->msg_prop = config_add_proposal(props,
 		    sap.sap_proposalnr, sap.sap_protoid)) == NULL) {
 			log_debug("%s: invalid proposal", __func__);
 			return (-1);
@@ -277,20 +282,6 @@ ikev2_pld_sa(struct iked *env, struct ikev2_payload *pld,
 		log_debug("%s: invalid proposal transforms", __func__);
 		return (-1);
 	}
-
-	if (msg->msg_response)
-		return (0);
-
-	/* XXX we need a better way to get this */
-	if (ikev2_sa_negotiate(sa,
-	    &msg->msg_policy->pol_proposals,
-	    &msg->msg_proposals, msg->msg_decrypted ?
-	    IKEV2_SAPROTO_ESP : IKEV2_SAPROTO_IKE) != 0) {
-		log_debug("%s: no proposal chosen", __func__);
-		msg->msg_error = IKEV2_N_NO_PROPOSAL_CHOSEN;
-		return (-1);
-	} else if (sa_stateok(sa, IKEV2_STATE_SA_INIT))
-		sa_stateflags(sa, IKED_REQ_SA);
 
 	return (0);
 }
@@ -345,7 +336,7 @@ ikev2_pld_xform(struct iked *env, struct ikev2_sa_proposal *sap,
 		ikev2_pld_attr(env, &xfrm, msg, offset + sizeof(xfrm),
 		    betoh16(xfrm.xfrm_length) - sizeof(xfrm));
 
-	if (!msg->msg_response) {
+	if (ikev2_msg_frompeer(msg)) {
 		if (config_add_transform(msg->msg_prop, xfrm.xfrm_type,
 		    betoh16(xfrm.xfrm_id), msg->msg_attrlength,
 		    msg->msg_attrlength) == NULL) {
@@ -422,9 +413,9 @@ ikev2_pld_ke(struct iked *env, struct ikev2_payload *pld,
 
 	print_hex(buf, 0, len);
 
-	if (!msg->msg_response) {
-		if ((msg->msg_sa->sa_dhiexchange =
-		    ibuf_new(buf, len)) == NULL) {
+	if (ikev2_msg_frompeer(msg)) {
+		ibuf_release(msg->msg_ke);
+		if ((msg->msg_ke = ibuf_new(buf, len)) == NULL) {
 			log_debug("%s: failed to get exchange", __func__);
 			return (-1);
 		}
@@ -465,7 +456,7 @@ ikev2_pld_id(struct iked *env, struct ikev2_payload *pld,
 	log_debug("%s: id %s/%s length %d",
 	    __func__, print_map(id.id_type, ikev2_id_map), idstr, len);
 
-	if (msg->msg_response) {
+	if (!ikev2_msg_frompeer(msg)) {
 		ibuf_release(idb.id_buf);
 		return (0);
 	}
@@ -516,7 +507,7 @@ ikev2_pld_cert(struct iked *env, struct ikev2_payload *pld,
 
 	print_hex(buf, 0, len);
 
-	if (msg->msg_response)
+	if (!ikev2_msg_frompeer(msg))
 		return (0);
 
 	if (!sa->sa_hdr.sh_initiator && !msg->msg_response) {
@@ -559,7 +550,7 @@ ikev2_pld_certreq(struct iked *env, struct ikev2_payload *pld,
 	    __func__, print_map(cert.cert_type, ikev2_cert_map), len);
 	print_hex(buf, 0, len);
 
-	if (msg->msg_response)
+	if (!ikev2_msg_frompeer(msg))
 		return (0);
 
 	if (!len || (len % SHA_DIGEST_LENGTH) != 0) {
@@ -604,7 +595,7 @@ ikev2_pld_auth(struct iked *env, struct ikev2_payload *pld,
 
 	print_hex(buf, 0, len);
 
-	if (msg->msg_response)
+	if (!ikev2_msg_frompeer(msg))
 		return (0);
 
 	memcpy(&ikeauth, &policy->pol_auth, sizeof(ikeauth));
@@ -671,36 +662,16 @@ ikev2_pld_nonce(struct iked *env, struct ikev2_payload *pld,
 	size_t		 len;
 	u_int8_t	*buf;
 	u_int8_t	*msgbuf = ibuf_data(msg->msg_data);
-	struct iked_sa	*sa = msg->msg_sa;
-	struct ibuf	*localnonce, *peernonce;
 
 	buf = msgbuf + offset;
 	len = betoh16(pld->pld_length) - sizeof(*pld);
 	print_hex(buf, 0, len);
 
-	if (!msg->msg_response) {
-		if ((peernonce = ibuf_new(buf, len)) == NULL) {
+	if (ikev2_msg_frompeer(msg)) {
+		ibuf_release(msg->msg_nonce);
+		if ((msg->msg_nonce = ibuf_new(buf, len)) == NULL) {
 			log_debug("%s: failed to get peer nonce", __func__);
 			return (-1);
-		}
-		if ((localnonce =
-		    ibuf_random(IKED_NONCE_SIZE)) == NULL) {
-			log_debug("%s: failed to get local nonce", __func__);
-			ibuf_release(peernonce);
-			return (-1);
-		}
-
-		ibuf_release(sa->sa_inonce);
-		ibuf_release(sa->sa_rnonce);
-
-		log_debug("%s: updating nonces", __func__);
-
-		if (sa->sa_hdr.sh_initiator) {
-			sa->sa_inonce = localnonce;
-			sa->sa_rnonce = peernonce;
-		} else {
-			sa->sa_inonce = peernonce;
-			sa->sa_rnonce = localnonce;
 		}
 	}
 
@@ -734,11 +705,13 @@ ikev2_pld_notify(struct iked *env, struct ikev2_payload *pld,
 
 	print_hex(buf, 0, len);
 
+	if (!ikev2_msg_frompeer(msg))
+		return (0);
+
 	switch (type) {
 	case IKEV2_N_NAT_DETECTION_SOURCE_IP:
 	case IKEV2_N_NAT_DETECTION_DESTINATION_IP:
-		if (ikev2_nat_detection(msg, md, sizeof(md), type,
-		    msg->msg_response) == -1)
+		if (ikev2_nat_detection(msg, md, sizeof(md), type) == -1)
 			return (-1);
 		if (len != sizeof(md) || memcmp(buf, md, len) != 0) {
 			log_debug("%s: %s detected NAT, enabling "
@@ -827,7 +800,7 @@ ikev2_pld_delete(struct iked *env, struct ikev2_payload *pld,
 	case 8:
 		break;
 	default:
-		if (!msg->msg_response &&
+		if (ikev2_msg_frompeer(msg) &&
 		    del->del_protoid == IKEV2_SAPROTO_IKE) {
 			sa_state(env, sa, IKEV2_STATE_DELETE);
 			return (0);
@@ -842,7 +815,7 @@ ikev2_pld_delete(struct iked *env, struct ikev2_payload *pld,
 		return (-1);
 	}
 
-	if (!msg->msg_response &&
+	if (ikev2_msg_frompeer(msg) &&
 	    (localspi = calloc(cnt, sizeof(u_int64_t))) == NULL) {
 		log_warn("%s", __func__);
 		return (-1);
@@ -860,7 +833,7 @@ ikev2_pld_delete(struct iked *env, struct ikev2_payload *pld,
 			spi = betoh64(spi64);
 			break;
 		}
-		if (msg->msg_response) {
+		if (!ikev2_msg_frompeer(msg)) {
 			log_debug("%s: spi %s", __func__, print_spi(spi, sz));
 			continue;
 		}
@@ -872,7 +845,7 @@ ikev2_pld_delete(struct iked *env, struct ikev2_payload *pld,
 			found++;
 	}
 
-	if (msg->msg_response)
+	if (!ikev2_msg_frompeer(msg))
 		return (0);
 
 	if ((resp = ibuf_static()) == NULL)
@@ -1066,7 +1039,7 @@ ikev2_pld_cp(struct iked *env, struct ikev2_payload *pld,
 		i += betoh16(cfg->cfg_length) + sizeof(*cfg);
 	}
 
-	if (msg->msg_response)
+	if (!ikev2_msg_frompeer(msg))
 		return (0);
 
 	if (sa)

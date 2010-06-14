@@ -1,4 +1,4 @@
-/*	$OpenBSD: ikev2_msg.c,v 1.1 2010/06/10 08:29:47 reyk Exp $	*/
+/*	$OpenBSD: ikev2_msg.c,v 1.4 2010/06/14 11:33:55 reyk Exp $	*/
 /*	$vantronix: ikev2.c,v 1.101 2010/06/03 07:57:33 reyk Exp $	*/
 
 /*
@@ -104,7 +104,7 @@ ikev2_msg_cb(int fd, short event, void *arg)
 	ikev2_recv(env, &msg);
 
  done:
-	message_cleanup(env, &msg);
+	ikev2_msg_cleanup(env, &msg);
 }
 
 struct ibuf *
@@ -120,8 +120,19 @@ ikev2_msg_init(struct iked *env, struct iked_message *msg,
 	msg->msg_response = response ? 1 : 0;
 	msg->msg_fd = -1;
 	msg->msg_data = ibuf_static();
+	TAILQ_INIT(&msg->msg_proposals);
 
 	return (msg->msg_data);
+}
+
+void
+ikev2_msg_cleanup(struct iked *env, struct iked_message *msg)
+{
+	if (msg->msg_data != NULL) {
+		ibuf_release(msg->msg_data);
+		msg->msg_data = NULL;
+	}
+	config_free_proposals(&msg->msg_proposals, 0);
 }
 
 int
@@ -190,7 +201,7 @@ ikev2_msg_valid_ike_sa(struct iked *env, struct ike_header *oldhdr,
 	(void)ikev2_msg_send(env, msg->msg_fd, &resp);
 
  done:
-	message_cleanup(env, &resp);
+	ikev2_msg_cleanup(env, &resp);
 #endif
 
 	/* Always fail */
@@ -563,7 +574,7 @@ ikev2_msg_send_encrypt(struct iked *env, struct iked_sa *sa,
  done:
 	/* e is cleaned up by the calling function */
 	*ep = e;
-	message_cleanup(env, &resp);
+	ikev2_msg_cleanup(env, &resp);
 
 	return (ret);
 }
@@ -785,4 +796,41 @@ ikev2_msg_authsign(struct iked *env, struct iked_sa *sa,
 	dsa_free(dsa);
 
 	return (ret);
+}
+
+int
+ikev2_msg_frompeer(struct iked_message *msg)
+{
+	struct iked_sa		*sa = msg->msg_sa;
+	struct ike_header	*hdr;
+
+	if (msg->msg_decrypted)
+		msg = msg->msg_decrypted;
+
+	if (sa == NULL ||
+	    (hdr = ibuf_seek(msg->msg_data, 0, sizeof(*hdr))) == NULL)
+		return (0);
+
+	if (!sa->sa_hdr.sh_initiator &&
+	    (hdr->ike_flags & IKEV2_FLAG_INITIATOR))
+		return (1);
+	else if (sa->sa_hdr.sh_initiator &&
+	    (hdr->ike_flags & IKEV2_FLAG_INITIATOR) == 0)
+		return (1);
+
+	return (0);
+}
+
+struct iked_socket *
+ikev2_msg_getsocket(struct iked *env, int af)
+{
+	switch (af) {
+	case AF_INET:
+		return (env->sc_sock4);
+	case AF_INET6:
+		return (env->sc_sock6);
+	}
+
+	log_debug("%s: af socket %d not available", __func__, af);
+	return (NULL);
 }

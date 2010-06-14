@@ -1,4 +1,4 @@
-/*	$OpenBSD: util.c,v 1.2 2010/06/10 09:14:38 reyk Exp $	*/
+/*	$OpenBSD: util.c,v 1.4 2010/06/14 11:33:55 reyk Exp $	*/
 /*	$vantronix: util.c,v 1.39 2010/06/02 12:22:58 reyk Exp $	*/
 
 /*
@@ -726,15 +726,6 @@ print_proto(u_int8_t proto)
 	return (buf[idx++]);
 }
 
-void
-message_cleanup(struct iked *env, struct iked_message *msg)
-{
-	if (msg->msg_data != NULL) {
-		ibuf_release(msg->msg_data);
-		msg->msg_data = NULL;
-	}
-}
-
 int
 expand_string(char *label, size_t len, const char *srch, const char *repl)
 {
@@ -900,6 +891,8 @@ ibuf_copy(struct ibuf *buf, size_t len)
 struct ibuf *
 ibuf_dup(struct ibuf *buf)
 {
+	if (buf == NULL)
+		return (NULL);
 	return (ibuf_new(ibuf_data(buf), ibuf_size(buf)));
 }
 

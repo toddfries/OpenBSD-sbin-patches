@@ -1,4 +1,4 @@
-/*	$OpenBSD: policy.c,v 1.3 2010/06/10 12:06:34 reyk Exp $	*/
+/*	$OpenBSD: policy.c,v 1.6 2010/06/14 12:06:33 reyk Exp $	*/
 /*	$vantronix: policy.c,v 1.29 2010/05/28 15:34:35 reyk Exp $	*/
 
 /*
@@ -169,11 +169,13 @@ sa_stateok(struct iked_sa *sa, int state)
 
 struct iked_sa *
 sa_new(struct iked *env, u_int64_t ispi, u_int64_t rspi,
-    u_int initiator, struct iked_policy *policy)
+    u_int initiator, struct iked_policy *pol)
 {
 	struct iked_sa	*sa;
+	struct iked_id	*localid;
 
-	if ((sa = sa_lookup(env, ispi, rspi, initiator)) == NULL) {
+	if ((ispi == 0 && rspi == 0) ||
+	    (sa = sa_lookup(env, ispi, rspi, initiator)) == NULL) {
 		/* Create new SA */
 		sa = config_new_sa(env, initiator);
 	}
@@ -181,20 +183,34 @@ sa_new(struct iked *env, u_int64_t ispi, u_int64_t rspi,
 		log_debug("%s: failed to get sa", __func__);
 		return (NULL);
 	}
-	if (sa->sa_policy == NULL) {
-		sa->sa_policy = policy;
+	if (sa->sa_policy == NULL)
+		sa->sa_policy = pol;
+	else
+		pol = sa->sa_policy;
+
+	if (initiator) {
+		localid = &sa->sa_iid;
+	} else {
+		localid = &sa->sa_rid;
+
+		sa->sa_staterequire = IKED_REQ_AUTH|IKED_REQ_SA;
+		if (pol != NULL && pol->pol_auth.auth_eap) {
+			sa->sa_staterequire |= IKED_REQ_CERT;
+		} else if (pol != NULL && pol->pol_auth.auth_method !=
+		    IKEV2_AUTH_SHARED_KEY_MIC) {
+			sa->sa_staterequire |= IKED_REQ_VALID|IKED_REQ_CERT;
+		}
+		if (sa->sa_hdr.sh_ispi == 0)
+			sa->sa_hdr.sh_ispi = ispi;
+		if (sa->sa_hdr.sh_rspi == 0)
+			sa->sa_hdr.sh_rspi = rspi;
 	}
-	sa->sa_staterequire = IKED_REQ_AUTH|IKED_REQ_SA;
-	if (policy != NULL && policy->pol_auth.auth_eap) {
-		sa->sa_staterequire |= IKED_REQ_CERT;
-	} else if (policy != NULL &&
-	    policy->pol_auth.auth_method != IKEV2_AUTH_SHARED_KEY_MIC) {
-		sa->sa_staterequire |= IKED_REQ_VALID|IKED_REQ_CERT;
+
+	if (ikev2_policy2id(&pol->pol_localid, localid, 1) != 0) {
+		log_debug("%s: failed to get local id", __func__);
+		sa_free(env, sa);
+		return (NULL);
 	}
-	if (sa->sa_hdr.sh_ispi == 0)
-		sa->sa_hdr.sh_ispi = ispi;
-	if (sa->sa_hdr.sh_rspi == 0)
-		sa->sa_hdr.sh_rspi = rspi;
 
 	/* Re-insert node into the tree */
 	(void)RB_REMOVE(iked_sas, &env->sc_sas, sa);
@@ -268,6 +284,7 @@ sa_lookup(struct iked *env, u_int64_t ispi, u_int64_t rspi,
 
 	if ((sa = RB_FIND(iked_sas, &env->sc_sas, &key)) != NULL)
 		gettimeofday(&sa->sa_timeused, NULL);
+
 	return (sa);
 }
 
@@ -282,8 +299,9 @@ sa_cmp(struct iked_sa *a, struct iked_sa *b)
 	if (a->sa_hdr.sh_ispi < b->sa_hdr.sh_ispi)
 		return (1);
 
-	/* Responder SPI is not yet set */
-	if (a->sa_hdr.sh_rspi == 0)
+	/* Responder SPI is not yet set in the local IKE SADB */
+	if ((b->sa_type == IKED_SATYPE_LOCAL && b->sa_hdr.sh_rspi == 0) ||
+	    (a->sa_type == IKED_SATYPE_LOCAL && a->sa_hdr.sh_rspi == 0))
 		return (0);
 
 	if (a->sa_hdr.sh_rspi > b->sa_hdr.sh_rspi)
