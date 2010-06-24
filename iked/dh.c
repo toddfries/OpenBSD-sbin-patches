@@ -1,4 +1,4 @@
-/*	$OpenBSD: dh.c,v 1.1 2010/06/03 16:41:12 reyk Exp $	*/
+/*	$OpenBSD: dh.c,v 1.3 2010/06/23 11:26:13 reyk Exp $	*/
 /*	$vantronix: dh.c,v 1.13 2010/05/28 15:34:35 reyk Exp $	*/
 
 /*
@@ -18,25 +18,16 @@
  */
 
 #include <sys/param.h>
-#include <sys/queue.h>
-#include <sys/socket.h>
-#include <sys/uio.h>
-
-#include <netinet/in.h>
-#include <arpa/inet.h>
-
 #include <string.h>
-#include <event.h>
 
 #include <openssl/obj_mac.h>
 #include <openssl/dh.h>
 #include <openssl/ec.h>
-#include <openssl/ec.h>
 #include <openssl/ecdh.h>
 
-#include "iked.h"
 #include "dh.h"
-#include "ikev2.h"
+
+int	dh_init(struct group *);
 
 int	modp_init(struct group *);
 int	modp_getlen(struct group *);
@@ -69,8 +60,8 @@ struct group_id ike_groups[] = {
 	    "FFFFFFFFFFFFFFFF",
 	    "02"
 	},
-	{ GROUP_EC, 3, 155, NULL, NULL, NID_ipsec3 },
-	{ GROUP_EC, 4, 185, NULL, NULL, NID_ipsec4 },
+	{ GROUP_EC2N, 3, 155, NULL, NULL, NID_ipsec3 },
+	{ GROUP_EC2N, 4, 185, NULL, NULL, NID_ipsec4 },
 	{ GROUP_MODP, 5, 1536,
 	    "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1"
 	    "29024E088A67CC74020BBEA63B139B22514A08798E3404DD"
@@ -221,9 +212,9 @@ struct group_id ike_groups[] = {
 	    "60C980DD98EDD3DFFFFFFFFFFFFFFFFF",
 	    "02"
 	},
-	{ GROUP_EC, 19, 256, NULL, NULL, NID_X9_62_prime256v1 },
-	{ GROUP_EC, 20, 384, NULL, NULL, NID_secp384r1 },
-	{ GROUP_EC, 21, 521, NULL, NULL, NID_secp521r1 },
+	{ GROUP_ECP, 19, 256, NULL, NULL, NID_X9_62_prime256v1 },
+	{ GROUP_ECP, 20, 384, NULL, NULL, NID_secp384r1 },
+	{ GROUP_ECP, 21, 521, NULL, NULL, NID_secp521r1 },
 	{ GROUP_MODP, 22, 1024,
 	    "B10B8F96A080E01DDE92DE5EAE5D54EC52C99FBCFB06A3C6"
 	    "9A6A9DCA52D23B616073E28675A23D189838EF1E2EE652C0"
@@ -286,19 +277,14 @@ struct group_id ike_groups[] = {
 	    "184B523D1DB246C32F63078490F00EF8D647D148D4795451"
 	    "5E2327CFEF98C582664B4C0F6CC41659"
 	},
-	{ GROUP_EC, 25, 192, NULL, NULL, NID_X9_62_prime192v1 },
-	{ GROUP_EC, 26, 224, NULL, NULL, NID_secp224r1 }
+	{ GROUP_ECP, 25, 192, NULL, NULL, NID_X9_62_prime192v1 },
+	{ GROUP_ECP, 26, 224, NULL, NULL, NID_secp224r1 }
 };
 
 void
 group_init(void)
 {
-	extern int debug;
-
-	if (debug > 2)
-		dh_selftest();
-
-	/* not used */
+	/* currently not used */
 	return;
 }
 
@@ -344,14 +330,14 @@ group_get(u_int32_t id)
 		group->exchange = modp_create_exchange;
 		group->shared = modp_create_shared;
 		break;
-	case GROUP_EC:
+	case GROUP_EC2N:
+	case GROUP_ECP:
 		group->init = ec_init;
 		group->getlen = ec_getlen;
 		group->exchange = ec_create_exchange;
 		group->shared = ec_create_shared;
 		break;
 	default:
-		log_debug("%s: unsupported dh type %d", __func__, p->type);
 		group_free(group);
 		return (NULL);
 	}
@@ -463,8 +449,13 @@ ec_getlen(struct group *group)
 int
 ec_create_exchange(struct group *group, u_int8_t *buf)
 {
+	size_t	 len;
+
+	len = ec_getlen(group);
+	bzero(buf, len);
+
 	return (ec_point2raw(group, EC_KEY_get0_public_key(group->ec),
-	    buf, ec_getlen(group)));
+	    buf, len));
 }
 
 int
@@ -601,57 +592,4 @@ ec_raw2point(struct group *group, u_int8_t *buf, size_t len)
 	BN_CTX_free(bnctx);
 
 	return (point);
-}
-
-void
-dh_selftest(void)
-{
-	struct group	*adh = NULL, *bdh = NULL;
-	struct ibuf	*asec = NULL, *aexc = NULL;
-	struct ibuf	*bsec = NULL, *bexc = NULL;
-	size_t		 len;
-	int		 id;
-	struct timeval	 start, stop, tv;
-
-	/* Test DH */
-	for (id = 0; id < IKEV2_XFORMDH_MAX; id++) {
-		if ((adh = group_get(id)) == NULL ||
-		    (bdh = group_get(id)) == NULL)
-			continue;
-
-		gettimeofday(&start, NULL);
-
-		print_debug("%s: DH group %d (%s)", __func__,
-		    id, print_map(id, ikev2_xformdh_map));
-
-		if ((len = dh_getlen(adh)) != 0 &&
-		    (aexc = ibuf_new(NULL, len)) != NULL &&
-		    (dh_create_exchange(adh, aexc->buf)) != -1 &&
-		    (bexc = ibuf_new(NULL, len)) != NULL &&
-		    (dh_create_exchange(bdh, bexc->buf)) != -1 &&
-		    (asec = ibuf_new(NULL, len)) != NULL &&
-		    (dh_create_shared(adh, asec->buf, bexc->buf)) != -1 &&
-		    (bsec = ibuf_new(NULL, len)) != NULL &&
-		    (dh_create_shared(bdh, bsec->buf, aexc->buf)) != -1 &&
-		    (ibuf_length(asec) == ibuf_length(bsec)) &&
-		    (ibuf_length(asec) == len) &&
-		    (memcmp(asec->buf, bsec->buf, len)) == 0)
-			print_debug(": success");
-		else
-			print_debug(": fail");
-
-		gettimeofday(&stop, NULL);
-		timersub(&stop, &start, &tv);
-
-		print_debug(" (%lu.%lu seconds)\n", tv.tv_sec, tv.tv_usec);
-
-		ibuf_release(aexc);
-		ibuf_release(bexc);
-		ibuf_release(asec);
-		ibuf_release(bsec);
-		aexc = bexc = asec = bsec = NULL;
-
-		group_free(adh);
-		group_free(bdh);
-	}
 }
