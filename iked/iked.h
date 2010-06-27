@@ -1,4 +1,4 @@
-/*	$OpenBSD: iked.h,v 1.11 2010/06/14 23:14:09 reyk Exp $	*/
+/*	$OpenBSD: iked.h,v 1.16 2010/06/27 05:49:05 reyk Exp $	*/
 /*	$vantronix: iked.h,v 1.61 2010/06/03 07:57:33 reyk Exp $	*/
 
 /*
@@ -169,6 +169,7 @@ TAILQ_HEAD(iked_childsas, iked_childsa);
 struct iked_static_id {
 	u_int8_t	id_type;
 	u_int8_t	id_length;
+	u_int8_t	id_offset;
 	u_int8_t	id_data[IKED_ID_SIZE];
 };
 
@@ -271,6 +272,7 @@ struct iked_dsa {
 
 struct iked_id {
 	u_int8_t	 id_type;
+	u_int8_t	 id_offset;
 	struct ibuf	*id_buf;
 };
 
@@ -375,8 +377,9 @@ struct iked_message {
 	int			 msg_fd;
 	int			 msg_response;
 	int			 msg_natt;
-	struct iked_message	*msg_decrypted;
 	int			 msg_error;
+	int			 msg_e;
+	struct iked_message	*msg_parent;
 
 	/* Associated policy and SA */
 	struct iked_policy	*msg_policy;
@@ -387,6 +390,9 @@ struct iked_message {
 	struct iked_spi		 msg_rekey;
 	struct ibuf		*msg_nonce;	/* dh NONCE */
 	struct ibuf		*msg_ke;	/* dh key exchange */
+	struct iked_id		 msg_auth;	/* AUTH payload */
+	struct iked_id		 msg_id;
+	struct iked_id		 msg_cert;
 
 	/* Parse stack */
 	struct iked_proposal	*msg_prop;
@@ -656,8 +662,8 @@ int	 pfkey_init(void);
 
 /* ca.c */
 pid_t	 caproc(struct iked *, struct iked_proc *);
-int	 ca_setreq(struct iked *, struct iked_sahdr *, u_int8_t,
-	    u_int8_t *, size_t, enum iked_procid);
+int	 ca_setreq(struct iked *, struct iked_sahdr *, struct iked_static_id *,
+	    u_int8_t, u_int8_t *, size_t, enum iked_procid);
 int	 ca_setcert(struct iked *, struct iked_sahdr *, struct iked_id *,
 	    u_int8_t, u_int8_t *, size_t, enum iked_procid);
 int	 ca_setauth(struct iked *, struct iked_sa *,
@@ -720,7 +726,7 @@ u_int32_t
 const char *
 	 print_host(struct sockaddr_storage *, char *, size_t);
 char	*get_string(u_int8_t *, size_t);
-int	 print_id(struct iked_id *, off_t, char *, size_t);
+int	 print_id(struct iked_id *, char *, size_t);
 const char *
 	 print_proto(u_int8_t);
 int	 expand_string(char *, size_t, const char *, const char *);

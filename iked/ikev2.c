@@ -1,4 +1,4 @@
-/*	$OpenBSD: ikev2.c,v 1.15 2010/06/23 10:49:37 reyk Exp $	*/
+/*	$OpenBSD: ikev2.c,v 1.20 2010/06/27 05:40:49 reyk Exp $	*/
 /*	$vantronix: ikev2.c,v 1.101 2010/06/03 07:57:33 reyk Exp $	*/
 
 /*
@@ -56,15 +56,15 @@ struct iked_sa *
 	    u_int8_t *, u_int8_t **, size_t *);
 
 void	 ikev2_recv(struct iked *, struct iked_message *);
-int	 ikev2_ike_auth(struct iked *, struct iked_sa *);
+int	 ikev2_ike_auth(struct iked *, struct iked_sa *,
+	    struct iked_message *);
 
 void	 ikev2_init_recv(struct iked *, struct iked_message *,
 	    struct ike_header *);
 int	 ikev2_init_ike_sa(struct iked *, struct iked_policy *);
 int	 ikev2_init_ike_auth(struct iked *, struct iked_sa *);
 int	 ikev2_init_auth(struct iked *, struct iked_message *);
-int	 ikev2_init_done(struct iked *, struct iked_sa *,
-	    struct iked_message *);
+int	 ikev2_init_done(struct iked *, struct iked_sa *);
 
 void	 ikev2_resp_recv(struct iked *, struct iked_message *,
 	    struct ike_header *);
@@ -219,10 +219,10 @@ ikev2_dispatch_cert(int fd, struct iked_proc *p, struct imsg *imsg)
 			sa_stateflags(sa, IKED_REQ_VALID);
 			sa_state(env, sa, IKEV2_STATE_VALID);
 		} else {
-			log_debug("%s: peer certificate is invalid", __func__);
+			log_warnx("%s: peer certificate is invalid", __func__);
 		}
 
-		if (ikev2_ike_auth(env, sa) != 0)
+		if (ikev2_ike_auth(env, sa, NULL) != 0)
 			log_debug("%s: failed to send ike auth", __func__);
 		break;
 	case IMSG_CERT:
@@ -238,6 +238,7 @@ ikev2_dispatch_cert(int fd, struct iked_proc *p, struct imsg *imsg)
 			id = &sa->sa_rcert;
 
 		id->id_type = type;
+		id->id_offset = 0;
 		ibuf_release(id->id_buf);
 		id->id_buf = NULL;
 
@@ -255,7 +256,7 @@ ikev2_dispatch_cert(int fd, struct iked_proc *p, struct imsg *imsg)
 
 		sa_stateflags(sa, IKED_REQ_CERT);
 
-		if (ikev2_ike_auth(env, sa) != 0)
+		if (ikev2_ike_auth(env, sa, NULL) != 0)
 			log_debug("%s: failed to send ike auth", __func__);
 		break;
 	case IMSG_AUTH:
@@ -269,6 +270,7 @@ ikev2_dispatch_cert(int fd, struct iked_proc *p, struct imsg *imsg)
 
 		id = &sa->sa_localauth;
 		id->id_type = type;
+		id->id_offset = 0;
 		ibuf_release(id->id_buf);
 
 		if (type != IKEV2_AUTH_NONE) {
@@ -282,7 +284,7 @@ ikev2_dispatch_cert(int fd, struct iked_proc *p, struct imsg *imsg)
 
 		sa_stateflags(sa, IKED_REQ_AUTH);
 
-		if (ikev2_ike_auth(env, sa) != 0)
+		if (ikev2_ike_auth(env, sa, NULL) != 0)
 			log_debug("%s: failed to send ike auth", __func__);
 		break;
 	default:
@@ -387,11 +389,124 @@ ikev2_recv(struct iked *env, struct iked_message *msg)
 }
 
 int
-ikev2_ike_auth(struct iked *env, struct iked_sa *sa)
+ikev2_ike_auth(struct iked *env, struct iked_sa *sa,
+    struct iked_message *msg)
 {
+	struct iked_id		*id, *certid;
+	struct ibuf		*authmsg;
+	struct iked_auth	 ikeauth;
+	struct iked_policy	*policy = sa->sa_policy;
+	int			 ret = -1;
+
+	if (msg == NULL)
+		goto done;
+
+	if (sa->sa_hdr.sh_initiator) {
+		id = &sa->sa_rid;
+		certid = &sa->sa_rcert;
+	} else {
+		id = &sa->sa_iid;
+		certid = &sa->sa_icert;
+	}
+
+	if (msg->msg_id.id_type) {
+		memcpy(id, &msg->msg_id, sizeof(*id));
+		bzero(&msg->msg_id, sizeof(msg->msg_id));
+
+		if ((authmsg = ikev2_msg_auth(env, sa,
+		    !sa->sa_hdr.sh_initiator)) == NULL) {
+			log_debug("%s: failed to get response "
+			    "auth data", __func__);
+			return (-1);
+		}
+
+		ca_setauth(env, sa, authmsg, PROC_CERT);
+		ibuf_release(authmsg);
+	}
+
+	if (msg->msg_cert.id_type) {
+		memcpy(certid, &msg->msg_cert, sizeof(*certid));
+		bzero(&msg->msg_cert, sizeof(msg->msg_cert));
+
+		ca_setcert(env, &sa->sa_hdr,
+		    id, certid->id_type,
+		    ibuf_data(certid->id_buf),
+		    ibuf_length(certid->id_buf), PROC_CERT);
+	}
+
+	if (msg->msg_auth.id_type) {
+		memcpy(&ikeauth, &policy->pol_auth, sizeof(ikeauth));
+
+		if (policy->pol_auth.auth_eap && sa->sa_eapmsk != NULL) {
+			/*
+			 * The initiator EAP auth is a PSK derived
+			 * from the EAP-specific MSK
+			 */
+			ikeauth.auth_method = IKEV2_AUTH_SHARED_KEY_MIC;
+
+			/* Copy session key as PSK */
+			memcpy(ikeauth.auth_data, ibuf_data(sa->sa_eapmsk),
+			    ibuf_size(sa->sa_eapmsk));
+			ikeauth.auth_length = ibuf_size(sa->sa_eapmsk);
+		}
+
+		if (msg->msg_auth.id_type != ikeauth.auth_method) {
+			log_warnx("%s: unexpected auth method %s", __func__,
+			    print_map(ikeauth.auth_method, ikev2_auth_map));
+			return (-1);
+		}
+
+		if ((authmsg = ikev2_msg_auth(env, sa,
+		    sa->sa_hdr.sh_initiator)) == NULL) {
+			log_debug("%s: failed to get auth data", __func__);
+			return (-1);
+		}
+
+		ret = ikev2_msg_authverify(env, sa, &ikeauth,
+		    ibuf_data(msg->msg_auth.id_buf),
+		    ibuf_length(msg->msg_auth.id_buf),
+		    authmsg);
+		ibuf_release(authmsg);
+
+		if (ret != 0)
+			goto done;
+
+		if (sa->sa_eapmsk != NULL) {
+			if ((authmsg = ikev2_msg_auth(env, sa,
+			    !sa->sa_hdr.sh_initiator)) == NULL) {
+				log_debug("%s: failed to get auth data",
+				    __func__);
+				return (-1);
+			}
+
+			/* XXX 2nd AUTH for EAP messages */
+			ret = ikev2_msg_authsign(env, sa, &ikeauth, authmsg);
+			ibuf_release(authmsg);
+
+			if (ret != 0) {
+				/* XXX */
+				return (-1);
+			}
+
+			sa_state(env, sa, IKEV2_STATE_EAP_VALID);
+		}
+	}
+
+	if (!TAILQ_EMPTY(&msg->msg_proposals)) {
+		if (ikev2_sa_negotiate(sa,
+		    &sa->sa_policy->pol_proposals,
+		    &msg->msg_proposals, IKEV2_SAPROTO_ESP) != 0) {
+			log_debug("%s: no proposal chosen", __func__);
+			msg->msg_error = IKEV2_N_NO_PROPOSAL_CHOSEN;
+			return (-1);
+		} else
+			sa_stateflags(sa, IKED_REQ_SA);
+	}
+
+ done:
 	if (sa->sa_hdr.sh_initiator) {
 		if (sa_stateok(sa, IKEV2_STATE_AUTH_SUCCESS))
-			return (ikev2_init_done(env, sa, NULL));
+			return (ikev2_init_done(env, sa));
 		else
 			return (ikev2_init_ike_auth(env, sa));
 	}
@@ -443,7 +558,7 @@ ikev2_init_recv(struct iked *env, struct iked_message *msg,
 		(void)ikev2_init_auth(env, msg);
 		break;
 	case IKEV2_EXCHANGE_IKE_AUTH:
-		(void)ikev2_init_done(env, sa, msg);
+		(void)ikev2_ike_auth(env, sa, msg);
 		break;
 	case IKEV2_EXCHANGE_CREATE_CHILD_SA:
 	default:
@@ -755,22 +870,9 @@ ikev2_init_ike_auth(struct iked *env, struct iked_sa *sa)
 }
 
 int
-ikev2_init_done(struct iked *env, struct iked_sa *sa,
-    struct iked_message *msg)
+ikev2_init_done(struct iked *env, struct iked_sa *sa)
 {
 	int		 ret;
-
-	if (msg != NULL && !TAILQ_EMPTY(&msg->msg_proposals)) {
-		if (ikev2_sa_negotiate(sa,
-		    &sa->sa_policy->pol_proposals,
-		    &msg->msg_proposals, IKEV2_SAPROTO_ESP) != 0) {
-			log_debug("%s: no proposal chosen", __func__);
-			msg->msg_error = IKEV2_N_NO_PROPOSAL_CHOSEN;
-			sa_state(env, sa, IKEV2_STATE_DELETE);
-			return (-1);
-		} else
-			sa_stateflags(sa, IKED_REQ_SA);
-	}
 
 	if (!sa_stateok(sa, IKEV2_STATE_VALID))
 		return (0);	/* ignored */
@@ -803,6 +905,7 @@ ikev2_policy2id(struct iked_static_id *polid, struct iked_id *id, int srcid)
 		if (gethostname((char *)polid->id_data,
 		    sizeof(polid->id_data)) != 0)
 			return (-1);
+		polid->id_offset = 0;
 		polid->id_length =
 		    strlen((char *)polid->id_data); /* excluding NUL */
 	}
@@ -813,19 +916,20 @@ ikev2_policy2id(struct iked_static_id *polid, struct iked_id *id, int srcid)
 	/* Create an IKEv2 ID payload */
 	bzero(&hdr, sizeof(hdr));
 	hdr.id_type = id->id_type = polid->id_type;
+	id->id_offset = sizeof(hdr);
 
 	if ((id->id_buf = ibuf_new(&hdr, sizeof(hdr))) == NULL)
 		return (-1);
 
 	switch (id->id_type) {
-	case IKEV2_ID_IPV4_ADDR:
+	case IKEV2_ID_IPV4:
 		if (inet_pton(AF_INET, polid->id_data, &in4) != 1 ||
 		    ibuf_add(id->id_buf, &in4, sizeof(in4)) != 0) {
 			ibuf_release(id->id_buf);
 			return (-1);
 		}
 		break;
-	case IKEV2_ID_IPV6_ADDR:
+	case IKEV2_ID_IPV6:
 		if (inet_pton(AF_INET6, polid->id_data, &in6) != 1 ||
 		    ibuf_add(id->id_buf, &in6, sizeof(in6)) != 0) {
 			ibuf_release(id->id_buf);
@@ -841,12 +945,11 @@ ikev2_policy2id(struct iked_static_id *polid, struct iked_id *id, int srcid)
 		break;
 	}
 
-	if (print_id(id, sizeof(hdr), idstr, sizeof(idstr)) == -1)
+	if (print_id(id, idstr, sizeof(idstr)) == -1)
 		return (-1);
 
-	log_debug("%s: %s %s/%s length %d", __func__,
+	log_debug("%s: %s %s length %d", __func__,
 	    srcid ? "srcid" : "dstid",
-	    print_map(id->id_type, ikev2_id_map),
 	    idstr, ibuf_size(id->id_buf));
 
 	return (0);
@@ -1046,10 +1149,7 @@ ikev2_nat_detection(struct iked_message *msg, void *ptr, size_t len,
 		return (mdlen);
 
 	if (ikev2_msg_frompeer(msg)) {
-		if (msg->msg_decrypted)
-			buf = msg->msg_decrypted->msg_data;
-		else
-			buf = msg->msg_data;
+		buf = msg->msg_parent->msg_data;
 		if ((hdr = ibuf_seek(buf, 0, sizeof(*hdr))) == NULL)
 			return (-1);
 		ispi = hdr->ike_ispi;
@@ -1425,23 +1525,11 @@ ikev2_resp_recv(struct iked *env, struct iked_message *msg,
 			return;
 		}
 
-		if (!TAILQ_EMPTY(&msg->msg_proposals)) {
-			if (ikev2_sa_negotiate(sa,
-			    &sa->sa_policy->pol_proposals,
-			    &msg->msg_proposals, IKEV2_SAPROTO_ESP) != 0) {
-				log_debug("%s: no proposal chosen", __func__);
-				msg->msg_error = IKEV2_N_NO_PROPOSAL_CHOSEN;
-				sa_state(env, sa, IKEV2_STATE_DELETE);
-				return;
-			} else
-				sa_stateflags(sa, IKED_REQ_SA);
-		}
-
 		if (!sa_stateok(sa, IKEV2_STATE_AUTH_REQUEST) &&
 		    sa->sa_policy->pol_auth.auth_eap)
 			sa_state(env, sa, IKEV2_STATE_EAP);
 
-		if (ikev2_resp_ike_auth(env, sa) != 0) {
+		if (ikev2_ike_auth(env, sa, msg) != 0) {
 			log_debug("%s: failed to send auth response", __func__);
 			return;
 		}
@@ -1996,7 +2084,7 @@ ikev2_send_informational(struct iked *env, struct iked_message *msg)
 	if (ikev2_next_payload(pld, sizeof(*n), IKEV2_PAYLOAD_NONE) == -1)
 		goto done;
 
-	if (sa != NULL && msg->msg_decrypted) {
+	if (sa != NULL && msg->msg_e) {
 		/* IKE header */
 		if ((hdr = ikev2_add_header(buf, sa,
 		    ikev2_msg_id(env, sa, 0),
@@ -2756,14 +2844,14 @@ ikev2_sa_tag(struct iked_sa *sa, struct iked_id *id)
 		goto fail;
 	}
 
-	if (print_id(id, sizeof(struct ikev2_id),
-	    idstr, sizeof(idstr)) == -1) {
+	if (print_id(id, idstr, sizeof(idstr)) == -1) {
 		log_debug("%s: invalid id", __func__);
 		goto fail;
 	}
 
 	/* ASN.1 DER IDs are too long, use the CN part instead */
-	if (*idstr == '/' && (idrepl = strstr(idstr, "CN=")) != NULL) {
+	if ((id->id_type == IKEV2_ID_ASN1_DN) &&
+	    (idrepl = strstr(idstr, "CN=")) != NULL) {
 		domain = strstr(idrepl, "emailAddress=");
 		idrepl[strcspn(idrepl, "/")] = '\0';
 	} else
@@ -2787,7 +2875,7 @@ ikev2_sa_tag(struct iked_sa *sa, struct iked_id *id)
 	if (strstr(format, "$domain") != NULL) {
 		if (id->id_type == IKEV2_ID_FQDN)
 			domain = strchr(idrepl, '.');
-		else if (id->id_type == IKEV2_ID_RFC822_ADDR)
+		else if (id->id_type == IKEV2_ID_UFQDN)
 			domain = strchr(idrepl, '@');
 		else if (*idstr == '/' && domain != NULL)
 			domain = strchr(domain, '@');

@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.6 2010/06/23 11:26:13 reyk Exp $	*/
+/*	$OpenBSD: parse.y,v 1.8 2010/06/26 19:48:04 reyk Exp $	*/
 /*	$vantronix: parse.y,v 1.22 2010/06/03 11:08:34 reyk Exp $	*/
 
 /*
@@ -586,7 +586,8 @@ host_spec	: STRING			{
 
 host		: host_spec			{ $$ = $1; }
 		| host_spec '(' host_spec ')'   {
-			if ($3->af != $1->af) {
+			if (($1->af != AF_UNSPEC) && ($3->af != AF_UNSPEC) &&
+			    ($3->af != $1->af)) {
 				yyerror("Flow NAT address family mismatch");
 				YYERROR;
 			}
@@ -1429,13 +1430,13 @@ get_id_type(char *string)
 		return (IKEV2_ID_NONE);
 
 	if (*string == '/')
-		return (IKEV2_ID_DER_ASN1_DN);
+		return (IKEV2_ID_ASN1_DN);
 	else if (inet_pton(AF_INET, string, &ia) == 1)
-		return (IKEV2_ID_IPV4_ADDR);
+		return (IKEV2_ID_IPV4);
 	else if (inet_pton(AF_INET6, string, &ia) == 1)
-		return (IKEV2_ID_IPV6_ADDR);
+		return (IKEV2_ID_IPV6);
 	else if (strchr(string, '@'))
-		return (IKEV2_ID_RFC822_ADDR);
+		return (IKEV2_ID_UFQDN);
 	else
 		return (IKEV2_ID_FQDN);
 }
@@ -2163,7 +2164,8 @@ create_ike(char *name, u_int8_t ipproto, struct ipsec_hosts *hosts,
 	}
 
 	if (peers && peers->src && peers->dst &&
-	    peers->src->af != peers->dst->af)
+	    (peers->src->af != AF_UNSPEC) && (peers->dst->af != AF_UNSPEC) &&
+	    (peers->src->af != peers->dst->af))
 		fatalx("create_ike: address family mismatch");
 
 	ipa = ipb = NULL;
