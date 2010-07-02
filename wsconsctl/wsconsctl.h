@@ -1,4 +1,4 @@
-/*	$OpenBSD: wsconsctl.h,v 1.10 2010/06/28 20:40:39 maja Exp $	*/
+/*	$OpenBSD: wsconsctl.h,v 1.12 2010/07/01 16:47:58 maja Exp $	*/
 /*	$NetBSD: wsconsctl.h 1.1 1998/12/28 14:01:17 hannken Exp $ */
 
 /*-
@@ -45,6 +45,8 @@ struct field {
 #define FMT_KBDENC	104		/* keyboard encoding */
 #define FMT_KBMAP	105		/* keyboard map */
 #define FMT_SCALE	106		/* wsmouse scale */
+#define FMT_EMUL	107		/* wsdisplay emulations */
+#define FMT_SCREEN	108		/* wddisplay screen types */
 	int format;
 #define FLG_RDONLY	0x0001		/* variable cannot be modified */
 #define FLG_WRONLY	0x0002		/* variable cannot be displayed */
@@ -71,10 +73,13 @@ void ksymenc(int);
 keysym_t ksym_upcase(keysym_t);
 void keyboard_get_values(const char *,int);
 int keyboard_put_values(const char *,int);
+int keyboard_next_device(int *);
 void mouse_get_values(const char *,int);
 int mouse_put_values(const char *,int);
+int mouse_next_device(int *);
 void display_get_values(const char *,int);
 int display_put_values(const char *,int);
+int display_next_device(int *);
 int yyparse(void);
 void yyerror(char *);
 int yylex(void);

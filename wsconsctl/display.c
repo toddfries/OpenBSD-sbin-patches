@@ -1,4 +1,4 @@
-/*	$OpenBSD: display.c,v 1.13 2009/09/27 06:27:03 maja Exp $	*/
+/*	$OpenBSD: display.c,v 1.15 2010/07/01 16:47:58 maja Exp $	*/
 /*	$NetBSD: display.c,v 1.1 1998/12/28 14:01:16 hannken Exp $ */
 
 /*-
@@ -34,7 +34,9 @@
 #include <sys/time.h>
 #include <dev/wscons/wsconsio.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <err.h>
+#include <stdio.h>
 #include <string.h>
 #include "wsconsctl.h"
 
@@ -43,12 +45,16 @@ u_int width, height, depth;
 int focus;
 struct field_pc brightness, contrast, backlight;
 int burnon, burnoff, vblank, kbdact, msact, outact;
+struct wsdisplay_emultype emuls;
+struct wsdisplay_screentype screens;
 
 struct field display_field_tab[] = {
     { "type",		&dpytype,	FMT_DPYTYPE,	FLG_RDONLY },
     { "width",		&width,		FMT_UINT,	FLG_RDONLY },
     { "height",		&height,	FMT_UINT,	FLG_RDONLY },
     { "depth",		&depth,		FMT_UINT,	FLG_RDONLY },
+    { "emulations",	&emuls,		FMT_EMUL,	FLG_RDONLY },
+    { "screentypes",	&screens,	FMT_SCREEN,	FLG_RDONLY },
     { "focus",		&focus,		FMT_INT,	FLG_MODIFY },
     { "brightness",	&brightness,	FMT_PC,		FLG_MODIFY|FLG_INIT },
     { "contrast",	&contrast,	FMT_PC,		FLG_MODIFY|FLG_INIT },
@@ -91,6 +97,12 @@ display_get_values(const char *pre, int fd)
 		} else if (ptr == &focus) {
 			fillioctl(WSDISPLAYIO_GETSCREEN);
 			ptr = &gscr;
+		} else if (ptr == &emuls) {
+			fillioctl(WSDISPLAYIO_GETEMULTYPE);
+			emuls.idx=0;
+		} else if (ptr == &screens) {
+			fillioctl(WSDISPLAYIO_GETSCREENTYPE);
+			screens.idx=0;
 		} else if (ptr == &brightness) {
 			ptr = &param;
 			param.param = WSDISPLAYIO_PARAM_BRIGHTNESS;
@@ -150,6 +162,10 @@ display_get_values(const char *pre, int fd)
 				depth = fbinfo.depth;
 			}
 			fbon++;
+		} else if (ptr == &emuls) {
+			emuls.idx=fd;
+		} else if (ptr == &screens) {
+			screens.idx=fd;
 		} else if (ptr == &param) {
 			struct field_pc *pc = pf->valp;
 
@@ -243,4 +259,25 @@ display_put_values(const char *pre, int fd)
 	}
 
 	return 0;
+}
+
+int
+display_next_device(int *index)
+{
+	char devname[20];
+	int fd = -1;
+
+	snprintf(devname, sizeof(devname), "/dev/tty%c0", *index + 'C');
+
+	if (*index > 7) {
+		*index = -1;
+		return(fd);
+	}
+
+	if ((fd = open(devname, O_WRONLY)) < 0 &&
+	    (fd = open(devname, O_RDONLY)) < 0) {
+		if (errno != ENXIO)
+			*index = -1;
+	}
+	return(fd);
 }
