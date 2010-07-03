@@ -1,4 +1,4 @@
-/*	$OpenBSD: dispatch.c,v 1.46 2010/06/02 09:57:16 phessler Exp $	*/
+/*	$OpenBSD: dispatch.c,v 1.48 2010/07/03 04:44:51 guenther Exp $	*/
 
 /*
  * Copyright 2004 Henning Brauer <henning@openbsd.org>
@@ -257,33 +257,6 @@ interface_link_forceup(char *ifname)
 	return (1);
 }
 
-void
-interface_link_forcedown(char *ifname)
-{
-	struct ifreq ifr;
-	int sock;
-
-	if ((sock = socket(AF_INET, SOCK_DGRAM, 0)) == -1)
-		error("Can't create socket");
-
-	memset(&ifr, 0, sizeof(ifr));
-	strlcpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
-	if (ioctl(sock, SIOCGIFFLAGS, (caddr_t)&ifr) == -1) {
-		close(sock);
-		return;
-	}
-
-	if ((ifr.ifr_flags & IFF_UP) == IFF_UP) {
-		ifr.ifr_flags &= ~IFF_UP;
-		if (ioctl(sock, SIOCSIFFLAGS, (caddr_t)&ifr) == -1) {
-			close(sock);
-			return;
-		}
-	}
-
-	close(sock);
-}
-
 int
 interface_status(char *ifname)
 {
@@ -465,7 +438,7 @@ get_rdomain(char *name)
 
 	bzero(&ifr, sizeof(ifr));
 	strlcpy(ifr.ifr_name, name, sizeof(ifr.ifr_name));
-	if (ioctl(s, SIOCGIFRTABLEID, (caddr_t)&ifr) != -1)
+	if (ioctl(s, SIOCGIFRDOMAIN, (caddr_t)&ifr) != -1)
 	    rv = ifr.ifr_rdomainid;
 
 	close(s);
