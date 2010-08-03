@@ -1,4 +1,4 @@
-/*	$OpenBSD: disklabel.c,v 1.167 2010/07/27 00:07:26 krw Exp $	*/
+/*	$OpenBSD: disklabel.c,v 1.169 2010/08/03 00:19:42 krw Exp $	*/
 
 /*
  * Copyright (c) 1987, 1993
@@ -265,11 +265,13 @@ main(int argc, char *argv[])
 	case RESTORE:
 		if (argc < 2 || argc > 3)
 			usage();
+		readlabel(f);
 #if NUMBOOT > 0
 		if (installboot && argc == 3)
 			makelabel(argv[2], NULL, &lab);
 #endif
 		lp = makebootarea(bootarea, &lab, f);
+		*lp = lab;
 		if (!(t = fopen(argv[1], "r")))
 			err(4, "%s", argv[1]);
 		error = getasciilabel(t, lp);
@@ -481,7 +483,7 @@ readlabel(int f)
 	if (cflag && ioctl(f, DIOCRLDINFO) < 0)
 		err(4, "ioctl DIOCRLDINFO");
 
-	if (dflag | aflag) {
+	if ((op == RESTORE) || dflag || aflag) {
 		if (ioctl(f, DIOCGPDINFO, &lab) < 0)
 			err(4, "ioctl DIOCGPDINFO");
 	} else {
@@ -1173,38 +1175,22 @@ getasciilabel(FILE *f, struct disklabel *lp)
 			}
 			continue;
 		}
-		if (!strcmp(cp, "rpm")) {
-			/* ignore */
+
+		/* Ignore fields that are no longer in the disklabel. */
+		if (!strcmp(cp, "rpm") ||
+		    !strcmp(cp, "interleave") ||
+		    !strcmp(cp, "trackskew") ||
+		    !strcmp(cp, "cylinderskew") ||
+		    !strcmp(cp, "headswitch") ||
+		    !strcmp(cp, "track-to-track seek"))
 			continue;
-		}
-		if (!strcmp(cp, "interleave")) {
-			/* ignore */
+
+		/* Ignore fields that are forcibly set when label is read. */
+		if (!strcmp(cp, "total sectors") ||
+		    !strcmp(cp, "boundstart") ||
+		    !strcmp(cp, "boundend"))
 			continue;
-		}
-		if (!strcmp(cp, "trackskew")) {
-			/* ignore */
-			continue;
-		}
-		if (!strcmp(cp, "cylinderskew")) {
-			/* ignore */
-			continue;
-		}
-		if (!strcmp(cp, "headswitch")) {
-			/* ignore */
-			continue;
-		}
-		if (!strcmp(cp, "track-to-track seek")) {
-			/* ignore */
-			continue;
-		}
-		if (!strcmp(cp, "boundstart")) {
-			/* ignore */
-			continue;
-		}
-		if (!strcmp(cp, "boundend")) {
-			/* ignore */
-			continue;
-		}
+
 		if ('a' <= *cp && *cp <= 'z' && cp[1] == '\0') {
 			unsigned int part = *cp - 'a';
 
