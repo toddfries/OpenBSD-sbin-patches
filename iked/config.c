@@ -1,4 +1,4 @@
-/*	$OpenBSD: config.c,v 1.5 2010/12/22 16:22:27 mikeb Exp $	*/
+/*	$OpenBSD: config.c,v 1.8 2011/01/21 11:56:00 reyk Exp $	*/
 /*	$vantronix: config.c,v 1.30 2010/05/28 15:34:35 reyk Exp $	*/
 
 /*
@@ -143,9 +143,6 @@ config_new_policy(struct iked *env)
 	TAILQ_INIT(&pol->pol_proposals);
 	RB_INIT(&pol->pol_sapeers);
 
-	if (env != NULL)
-		RB_INSERT(iked_policies, &env->sc_policies, pol);
-
 	return (pol);
 }
 
@@ -157,7 +154,7 @@ config_free_policy(struct iked *env, struct iked_policy *pol)
 	if (pol->pol_flags & IKED_POLICY_REFCNT)
 		goto remove;
 
-	(void)RB_REMOVE(iked_policies, &env->sc_policies, pol);
+	TAILQ_REMOVE(&env->sc_policies, pol, pol_entry);
 
 	RB_FOREACH(sa, iked_sapeers, &pol->pol_sapeers) {
 		/* Remove from the policy tree, but keep for existing SAs */
@@ -457,10 +454,9 @@ config_getreset(struct iked *env, struct imsg *imsg)
 
 	if (mode == RESET_ALL || mode == RESET_POLICY) {
 		log_debug("%s: flushing policies", __func__);
-		for (pol = RB_MIN(iked_policies, &env->sc_policies);
+		for (pol = TAILQ_FIRST(&env->sc_policies);
 		    pol != NULL; pol = nextpol) {
-			nextpol =
-			    RB_NEXT(iked_policies, &env->sc_policies, pol);
+			nextpol = TAILQ_NEXT(pol, pol_entry);
 			config_free_policy(env, pol);
 		}
 	}
@@ -543,21 +539,17 @@ config_setpfkey(struct iked *env, enum iked_procid id)
 {
 	int	 s;
 
-	if ((s = pfkey_init()) == -1)
+	if ((s = pfkey_socket()) == -1)
 		return (-1);
 	imsg_compose_proc(env, id, IMSG_PFKEY_SOCKET, s, NULL, 0);
 	return (0);
 }
 
 int
-config_getpfkey(struct iked *env, struct imsg *imsg,
-    void (*dispatch)(int, short, void *))
+config_getpfkey(struct iked *env, struct imsg *imsg)
 {
 	log_debug("%s: received pfkey fd %d", __func__, imsg->fd);
-	env->sc_pfkey = imsg->fd;
-	event_set(&env->sc_pfkeyev, env->sc_pfkey,
-	    EV_READ|EV_PERSIST, dispatch, env);
-	event_add(&env->sc_pfkeyev, NULL);
+	pfkey_init(env, imsg->fd);
 	return (0);
 }
 
@@ -650,7 +642,7 @@ config_setpolicy(struct iked *env, struct iked_policy *pol,
 int
 config_getpolicy(struct iked *env, struct imsg *imsg)
 {
-	struct iked_policy	*pol, *old;
+	struct iked_policy	*pol;
 	struct iked_proposal	 pp, *prop;
 	struct iked_transform	 xf, *xform;
 	struct iked_flow	*flow;
@@ -699,16 +691,39 @@ config_getpolicy(struct iked *env, struct imsg *imsg)
 		TAILQ_INSERT_TAIL(&pol->pol_flows, flow, flow_entry);
 	}
 
-	if ((old = RB_INSERT(iked_policies,
-	    &env->sc_policies, pol)) != NULL) {
-		config_free_policy(env, old);
-		RB_INSERT(iked_policies, &env->sc_policies, pol);
-	}
+	TAILQ_INSERT_TAIL(&env->sc_policies, pol, pol_entry);
 
-	if (pol->pol_flags & IKED_POLICY_DEFAULT)
+	if (pol->pol_flags & IKED_POLICY_DEFAULT) {
+		/* Only one default policy, just free/unref the old one */
+		if (env->sc_defaultcon != NULL)
+			config_free_policy(env, env->sc_defaultcon);
 		env->sc_defaultcon = pol;
+	}
 
 	print_policy(pol);
 
+	return (0);
+}
+
+int
+config_setcompile(struct iked *env, enum iked_procid id)
+{
+	if (env->sc_opts & IKED_OPT_NOACTION)
+		return (0);
+
+	imsg_compose_proc(env, id, IMSG_COMPILE, -1, NULL, 0);
+	return (0);
+}
+
+int
+config_getcompile(struct iked *env, struct imsg *imsg)
+{
+	/*
+	 * Do any necessary steps after configuration, for now we
+	 * only need to compile the skip steps.
+	 */
+	policy_calc_skip_steps(&env->sc_policies);
+
+	log_debug("%s: compilation done", __func__);
 	return (0);
 }

@@ -1,4 +1,4 @@
-/*	$OpenBSD: ikev2_msg.c,v 1.9 2010/12/22 16:22:27 mikeb Exp $	*/
+/*	$OpenBSD: ikev2_msg.c,v 1.11 2011/01/21 12:37:28 reyk Exp $	*/
 /*	$vantronix: ikev2.c,v 1.101 2010/06/03 07:57:33 reyk Exp $	*/
 
 /*
@@ -69,8 +69,8 @@ ikev2_msg_cb(int fd, short event, void *arg)
 	memcpy(&msg.msg_local, &sock->sock_addr, sizeof(sock->sock_addr));
 
 	if ((len = recvfromto(fd, buf, sizeof(buf), 0,
-	    (struct sockaddr*)&msg.msg_peer, &msg.msg_peerlen,
-	    (struct sockaddr*)&msg.msg_local, &msg.msg_locallen)) <
+	    (struct sockaddr *)&msg.msg_peer, &msg.msg_peerlen,
+	    (struct sockaddr *)&msg.msg_local, &msg.msg_locallen)) <
 	    (ssize_t)sizeof(natt))
 		return;
 
@@ -415,9 +415,9 @@ struct ibuf *
 ikev2_msg_decrypt(struct iked *env, struct iked_sa *sa,
     struct ibuf *msg, struct ibuf *src)
 {
-	size_t			 ivlen, encrlen, integrlen, blocklen,
+	ssize_t			 ivlen, encrlen, integrlen, blocklen,
 				    outlen, tmplen;
-	u_int8_t		 pad, *ptr;
+	u_int8_t		 pad = 0, *ptr;
 	struct ibuf		*integr, *encr, *tmp = NULL, *out = NULL;
 	off_t			 ivoff, encroff, integroff;
 
@@ -444,6 +444,11 @@ ikev2_msg_decrypt(struct iked *env, struct iked_sa *sa,
 	integroff = ibuf_size(src) - integrlen;
 	encroff = ivlen;
 	encrlen = ibuf_size(src) - integrlen - ivlen;
+
+	if (encrlen < 0 || integroff < 0) {
+		log_debug("%s: invalid integrity value", __func__);
+		goto done;
+	}
 
 	log_debug("%s: IV length %d", __func__, ivlen);
 	print_hex(ibuf_data(src), 0, ivlen);
@@ -491,13 +496,13 @@ ikev2_msg_decrypt(struct iked *env, struct iked_sa *sa,
 	    encrlen))) == NULL)
 		goto done;
 
-	outlen = ibuf_length(out);
+	if ((outlen = ibuf_length(out)) != 0) {
+		cipher_update(sa->sa_encr, ibuf_data(src) + encroff, encrlen,
+		    ibuf_data(out), &outlen);
 
-	cipher_update(sa->sa_encr, ibuf_data(src) + encroff, encrlen,
-	    ibuf_data(out), &outlen);
-
-	ptr = ibuf_seek(out, outlen - 1, 1);
-	pad = *ptr;
+		ptr = ibuf_seek(out, outlen - 1, 1);
+		pad = *ptr;
+	}
 
 	log_debug("%s: decrypted payload length %d/%d padding %d",
 	    __func__, outlen, encrlen, pad);
