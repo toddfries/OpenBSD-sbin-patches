@@ -1,4 +1,4 @@
-.\"	$OpenBSD: disklabel.8,v 1.94 2010/09/23 17:16:01 jmc Exp $
+.\"	$OpenBSD: disklabel.8,v 1.99 2011/04/19 14:20:37 halex Exp $
 .\"	$NetBSD: disklabel.8,v 1.9 1995/03/18 14:54:38 cgd Exp $
 .\"
 .\" Copyright (c) 1987, 1988, 1991, 1993
@@ -33,7 +33,7 @@
 .\"
 .\"	@(#)disklabel.8	8.2 (Berkeley) 4/19/94
 .\"
-.Dd $Mdocdate: September 23 2010 $
+.Dd $Mdocdate: April 19 2011 $
 .Dt DISKLABEL 8
 .Os
 .Sh NAME
@@ -60,7 +60,7 @@
 .Fl E
 .Op Fl c | d
 .Op Fl Anv
-.Op Fl f Ar tempfile
+.Op Fl F Ns | Ns Fl f Ar file
 .Ar disk
 .Nm disklabel
 .Fl R
@@ -161,21 +161,27 @@ Edit an existing disk label using the editor specified in the
 environment variable, or
 .Xr vi 1
 if none is specified.
-.It Fl f Ar tempfile
+.It Fl F Ar file
 Write entries to
-.Ar tempfile
+.Ar file
 in
 .Xr fstab 5
-format for any partitions for which mount point information has been
-specified.
+format for any partitions for which mount point information is known.
+The entries will written using disklabel UIDs.
 The
-.Fl f
+.Fl F
 flag is only valid when used in conjunction with the
 .Fl E
-flag.
+or
+.Fl A
+flags.
 If
-.Ar tempfile
+.Ar file
 already exists, it will be overwritten.
+.It Fl f Ar file
+The same as
+.Fl F
+except that entries will be written using disk device names.
 .It Fl h
 Print partition sizes in human readable format.
 .It Fl N

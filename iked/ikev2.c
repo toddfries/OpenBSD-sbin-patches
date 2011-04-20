@@ -1,4 +1,4 @@
-/*	$OpenBSD: ikev2.c,v 1.47 2011/01/28 18:21:37 mikeb Exp $	*/
+/*	$OpenBSD: ikev2.c,v 1.50 2011/04/18 09:54:41 reyk Exp $	*/
 /*	$vantronix: ikev2.c,v 1.101 2010/06/03 07:57:33 reyk Exp $	*/
 
 /*
@@ -61,6 +61,8 @@ int	 ikev2_ike_auth(struct iked *, struct iked_sa *,
 
 void	 ikev2_init_recv(struct iked *, struct iked_message *,
 	    struct ike_header *);
+int	 ikev2_init_ike_sa_peer(struct iked *, struct iked_policy *,
+	    struct iked_addr *);
 int	 ikev2_init_ike_auth(struct iked *, struct iked_sa *);
 int	 ikev2_init_auth(struct iked *, struct iked_message *);
 int	 ikev2_init_done(struct iked *, struct iked_sa *);
@@ -623,6 +625,13 @@ ikev2_init_recv(struct iked *env, struct iked_message *msg,
 int
 ikev2_init_ike_sa(struct iked *env, struct iked_policy *pol)
 {
+	return (ikev2_init_ike_sa_peer(env, pol, &pol->pol_peer));
+}
+
+int
+ikev2_init_ike_sa_peer(struct iked *env, struct iked_policy *pol,
+    struct iked_addr *peer)
+{
 	struct iked_message		 req;
 	struct ike_header		*hdr;
 	struct ikev2_payload		*pld;
@@ -638,7 +647,7 @@ ikev2_init_ike_sa(struct iked *env, struct iked_policy *pol)
 	in_port_t			 port;
 
 	if ((sock = ikev2_msg_getsocket(env,
-	    pol->pol_peer.addr_af)) == NULL)
+	    peer->addr_af)) == NULL)
 		return (-1);
 
 	/* Create a new initiator SA */
@@ -652,7 +661,7 @@ ikev2_init_ike_sa(struct iked *env, struct iked_policy *pol)
 		goto done;
 
 	if ((buf = ikev2_msg_init(env, &req,
-	    &pol->pol_peer.addr, pol->pol_peer.addr.ss_len,
+	    &peer->addr, peer->addr.ss_len,
 	    &pol->pol_local.addr, pol->pol_local.addr.ss_len, 0)) == NULL)
 		goto done;
 
@@ -1074,7 +1083,7 @@ ikev2_add_ts_payload(struct ibuf *buf, u_int type, struct iked_sa *sa)
 	tsp->tsp_count = pol->pol_nflows;
 	len = sizeof(*tsp);
 
-	TAILQ_FOREACH(flow, &pol->pol_flows, flow_entry) {
+	RB_FOREACH(flow, iked_flows, &pol->pol_flows) {
 		if ((ts = ibuf_advance(buf, sizeof(*ts))) == NULL)
 			return (-1);
 
@@ -3378,7 +3387,7 @@ ikev2_childsa_negotiate(struct iked *env, struct iked_sa *sa, int initiator)
 		if (ikev2_valid_proposal(prop, NULL, NULL) != 0)
 			continue;
 
-		TAILQ_FOREACH(flow, &sa->sa_policy->pol_flows, flow_entry) {
+		RB_FOREACH(flow, iked_flows, &sa->sa_policy->pol_flows) {
 			skip = 0;
 			TAILQ_FOREACH(saflow, &sa->sa_flows, flow_entry) {
 				if (IKED_ADDR_EQ(&saflow->flow_src,
@@ -3563,7 +3572,7 @@ ikev2_childsa_enable(struct iked *env, struct iked_sa *sa)
 			return (-1);
 		}
 
-		RB_INSERT(iked_activeflows, &env->sc_activeflows, flow);
+		RB_INSERT(iked_flows, &env->sc_activeflows, flow);
 
 		log_debug("%s: loaded flow %p", __func__, flow);
 	}
@@ -3610,36 +3619,6 @@ ikev2_childsa_delete(struct iked *env, struct iked_sa *sa, u_int8_t saproto,
 
 	if (spiptr)
 		*spiptr = peerspi;
-
-	return (found ? 0 : -1);
-}
-
-int
-ikev2_flows_delete(struct iked *env, struct iked_sa *sa, u_int8_t saproto)
-{
-	struct iked_flow	*flow, *nextflow;
-	int			 found = 0;
-
-	for (flow = TAILQ_FIRST(&sa->sa_flows); flow != NULL; flow = nextflow) {
-		nextflow = TAILQ_NEXT(flow, flow_entry);
-
-		if (saproto && flow->flow_saproto != saproto)
-			continue;
-
-		if (flow->flow_loaded)
-			RB_REMOVE(iked_activeflows, &env->sc_activeflows, flow);
-
-		if (pfkey_flow_delete(env->sc_pfkey, flow) != 0)
-			log_debug("%s: failed to delete flow %p", __func__,
-			    flow);
-		else
-			log_debug("%s: deleted flow %p", __func__, flow);
-
-		TAILQ_REMOVE(&sa->sa_flows, flow, flow_entry);
-		flow_free(flow);
-
-		found++;
-	}
 
 	return (found ? 0 : -1);
 }
@@ -3692,24 +3671,48 @@ ikev2_acquire_sa(struct iked *env, struct iked_flow *acquire)
 {
 	struct iked_flow	*flow;
 	struct iked_sa		*sa;
+	struct iked_policy	 pol, *p = NULL;
 
 	if (env->sc_passive)
 		return;
 
-	flow = RB_FIND(iked_activeflows, &env->sc_activeflows, acquire);
+	/* First try to find an active flow with IKE SA */
+	flow = RB_FIND(iked_flows, &env->sc_activeflows, acquire);
 	if (!flow) {
-		log_warnx("%s: flow wasn't found", __func__);
-		return;
-	}
+		/* Otherwise try to find a matching policy */
+		bzero(&pol, sizeof(pol));
+		pol.pol_af = acquire->flow_peer->addr_af;
+		memcpy(&pol.pol_peer, acquire->flow_peer,
+		    sizeof(pol.pol_peer));
 
-	if ((sa = flow->flow_ikesa) == NULL) {
-		log_warnx("%s: flow without SA", __func__);
-		return;
-	}
+		RB_INIT(&pol.pol_flows);
+		RB_INSERT(iked_flows, &pol.pol_flows, acquire);
+		pol.pol_nflows = 1;
 
-	if (ikev2_send_create_child_sa(env, sa, NULL, flow->flow_saproto))
-		log_warnx("%s: failed to initiate a CREATE_CHILD_SA exchange",
-		    __func__);
+		if ((p = policy_test(env, &pol)) == NULL) {
+			log_warnx("%s: flow wasn't found", __func__);
+			return;
+		}
+
+		log_debug("%s: found matching policy '%s'", __func__,
+		    p->pol_name);
+
+		if (ikev2_init_ike_sa_peer(env, p, acquire->flow_peer) != 0)
+			log_warnx("%s: failed to initiate a "
+			    "IKE_SA_INIT exchange", __func__);
+	} else {
+		log_debug("%s: found active flow", __func__);
+
+		if ((sa = flow->flow_ikesa) == NULL) {
+			log_warnx("%s: flow without SA", __func__);
+			return;
+		}
+
+		if (ikev2_send_create_child_sa(env, sa, NULL,
+		    flow->flow_saproto) != 0)
+			log_warnx("%s: failed to initiate a "
+			    "CREATE_CHILD_SA exchange", __func__);
+	}
 }
 
 void

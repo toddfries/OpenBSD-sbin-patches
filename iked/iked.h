@@ -1,4 +1,4 @@
-/*	$OpenBSD: iked.h,v 1.34 2011/01/26 16:59:23 mikeb Exp $	*/
+/*	$OpenBSD: iked.h,v 1.36 2011/04/18 08:45:43 reyk Exp $	*/
 /*	$vantronix: iked.h,v 1.61 2010/06/03 07:57:33 reyk Exp $	*/
 
 /*
@@ -144,8 +144,8 @@ struct iked_flow {
 	RB_ENTRY(iked_flow)		 flow_node;
 	TAILQ_ENTRY(iked_flow)		 flow_entry;
 };
-RB_HEAD(iked_activeflows, iked_flow);
-TAILQ_HEAD(iked_flows, iked_flow);
+RB_HEAD(iked_flows, iked_flow);
+TAILQ_HEAD(iked_saflows, iked_flow);
 
 struct iked_childsa {
 	u_int8_t			 csa_saproto;	/* IPSec protocol */
@@ -387,7 +387,7 @@ struct iked_sa {
 
 	struct iked_proposals		 sa_proposals;	/* SA proposals */
 	struct iked_childsas		 sa_childsas;	/* IPSec Child SAs */
-	struct iked_flows		 sa_flows;	/* IPSec flows */
+	struct iked_saflows		 sa_flows;	/* IPSec flows */
 
 	RB_ENTRY(iked_sa)		 sa_peer_entry;
 	RB_ENTRY(iked_sa)		 sa_entry;
@@ -460,7 +460,7 @@ struct iked {
 
 	struct iked_sas			 sc_sas;
 	struct iked_activesas		 sc_activesas;
-	struct iked_activeflows		 sc_activeflows;
+	struct iked_flows		 sc_activeflows;
 	struct iked_users		 sc_users;
 
 	void				*sc_priv;	/* per-process */
@@ -564,6 +564,7 @@ struct iked_sa *
 	 sa_new(struct iked *, u_int64_t, u_int64_t, u_int,
 	    struct iked_policy *);
 void	 sa_free(struct iked *, struct iked_sa *);
+void	 sa_free_flows(struct iked *, struct iked_saflows *);
 int	 sa_address(struct iked_sa *, struct iked_addr *,
 	    struct sockaddr_storage *);
 void	 childsa_free(struct iked_childsa *);
@@ -580,7 +581,7 @@ RB_PROTOTYPE(iked_sas, iked_sa, sa_entry, sa_cmp);
 RB_PROTOTYPE(iked_sapeers, iked_sa, sa_peer_entry, sa_peer_cmp);
 RB_PROTOTYPE(iked_users, iked_user, user_entry, user_cmp);
 RB_PROTOTYPE(iked_activesas, iked_childsa, csa_node, childsa_cmp);
-RB_PROTOTYPE(iked_activeflows, iked_flow, flow_node, flow_cmp);
+RB_PROTOTYPE(iked_flows, iked_flow, flow_node, flow_cmp);
 
 /* crypto.c */
 struct iked_hash *
@@ -639,7 +640,6 @@ int	 ikev2_policy2id(struct iked_static_id *, struct iked_id *, int);
 int	 ikev2_childsa_enable(struct iked *, struct iked_sa *);
 int	 ikev2_childsa_delete(struct iked *, struct iked_sa *,
 	    u_int8_t, u_int64_t, u_int64_t *, int);
-int	 ikev2_flows_delete(struct iked *, struct iked_sa *, u_int8_t);
 
 struct ibuf *
 	 ikev2_prfplus(struct iked_hash *, struct ibuf *, struct ibuf *,
