@@ -1,4 +1,4 @@
-/*	$OpenBSD: ca.c,v 1.12 2010/12/22 17:53:54 reyk Exp $	*/
+/*	$OpenBSD: ca.c,v 1.16 2011/05/09 11:15:18 reyk Exp $	*/
 /*	$vantronix: ca.c,v 1.29 2010/06/02 12:22:58 reyk Exp $	*/
 
 /*
@@ -49,7 +49,7 @@
 #include "iked.h"
 #include "ikev2.h"
 
-void	 ca_reset(struct iked *, void *);
+void	 ca_reset(struct privsep *, void *);
 int	 ca_reload(struct iked *);
 
 int	 ca_getreq(struct iked *, struct imsg *);
@@ -67,11 +67,11 @@ struct ibuf *
 int	 ca_x509_subjectaltname_cmp(X509 *, struct iked_static_id *);
 int	 ca_x509_subjectaltname(X509 *cert, struct iked_id *);
 int	 ca_key_serialize(EVP_PKEY *, struct iked_id *);
-int	 ca_dispatch_parent(int, struct iked_proc *, struct imsg *);
-int	 ca_dispatch_ikev1(int, struct iked_proc *, struct imsg *);
-int	 ca_dispatch_ikev2(int, struct iked_proc *, struct imsg *);
+int	 ca_dispatch_parent(int, struct privsep_proc *, struct imsg *);
+int	 ca_dispatch_ikev1(int, struct privsep_proc *, struct imsg *);
+int	 ca_dispatch_ikev2(int, struct privsep_proc *, struct imsg *);
 
-static struct iked_proc procs[] = {
+static struct privsep_proc procs[] = {
 	{ "parent",	PROC_PARENT,	ca_dispatch_parent },
 	{ "ikev1",	PROC_IKEV1,	ca_dispatch_ikev1 },
 	{ "ikev2",	PROC_IKEV2,	ca_dispatch_ikev2 }
@@ -88,7 +88,7 @@ struct ca_store {
 };
 
 pid_t
-caproc(struct iked *env, struct iked_proc *p)
+caproc(struct privsep *ps, struct privsep_proc *p)
 {
 	struct ca_store	*store;
 	FILE		*fp = NULL;
@@ -110,12 +110,13 @@ caproc(struct iked *env, struct iked_proc *p)
 	if (ca_key_serialize(key, &store->ca_privkey) != 0)
 		fatalx("ca: failed to serialize private key");
 
-	return (run_proc(env, p, procs, nitems(procs), ca_reset, store));
+	return (proc_run(ps, p, procs, nitems(procs), ca_reset, store));
 }
 
 void
-ca_reset(struct iked *env, void *arg)
+ca_reset(struct privsep *ps, void *arg)
 {
+	struct iked	*env = ps->ps_env;
 	struct ca_store	*store = arg;
 
 	if (store->ca_cas != NULL)
@@ -142,9 +143,9 @@ ca_reset(struct iked *env, void *arg)
 }
 
 int
-ca_dispatch_parent(int fd, struct iked_proc *p, struct imsg *imsg)
+ca_dispatch_parent(int fd, struct privsep_proc *p, struct imsg *imsg)
 {
-	struct iked		*env = p->env;
+	struct iked		*env = p->p_env;
 	struct ca_store	*store = env->sc_priv;
 	u_int			 mode;
 
@@ -154,7 +155,7 @@ ca_dispatch_parent(int fd, struct iked_proc *p, struct imsg *imsg)
 		memcpy(&mode, imsg->data, sizeof(mode));
 		if (mode == RESET_ALL || mode == RESET_CA) {
 			log_debug("%s: config reload", __func__);
-			ca_reset(env, store);
+			ca_reset(&env->sc_ps, store);
 		}
 		break;
 	default:
@@ -165,15 +166,15 @@ ca_dispatch_parent(int fd, struct iked_proc *p, struct imsg *imsg)
 }
 
 int
-ca_dispatch_ikev1(int fd, struct iked_proc *p, struct imsg *imsg)
+ca_dispatch_ikev1(int fd, struct privsep_proc *p, struct imsg *imsg)
 {
 	return (-1);
 }
 
 int
-ca_dispatch_ikev2(int fd, struct iked_proc *p, struct imsg *imsg)
+ca_dispatch_ikev2(int fd, struct privsep_proc *p, struct imsg *imsg)
 {
-	struct iked	*env = p->env;
+	struct iked	*env = p->p_env;
 
 	switch (imsg->hdr.type) {
 	case IMSG_CERTREQ:
@@ -194,7 +195,7 @@ ca_dispatch_ikev2(int fd, struct iked_proc *p, struct imsg *imsg)
 
 int
 ca_setcert(struct iked *env, struct iked_sahdr *sh, struct iked_id *id,
-    u_int8_t type, u_int8_t *data, size_t len, enum iked_procid procid)
+    u_int8_t type, u_int8_t *data, size_t len, enum privsep_procid procid)
 {
 	struct iovec		iov[4];
 	int			iovcnt = 0;
@@ -229,7 +230,7 @@ ca_setcert(struct iked *env, struct iked_sahdr *sh, struct iked_id *id,
 	iov[iovcnt].iov_len = len;
 	iovcnt++;
 
-	if (imsg_composev_proc(env, procid, IMSG_CERT, -1, iov, iovcnt) == -1)
+	if (proc_composev_imsg(env, procid, IMSG_CERT, -1, iov, iovcnt) == -1)
 		return (-1);
 	return (0);
 }
@@ -237,7 +238,7 @@ ca_setcert(struct iked *env, struct iked_sahdr *sh, struct iked_id *id,
 int
 ca_setreq(struct iked *env, struct iked_sahdr *sh,
     struct iked_static_id *localid, u_int8_t type, u_int8_t *data,
-    size_t len, enum iked_procid procid)
+    size_t len, enum privsep_procid procid)
 {
 	struct iovec		iov[4];
 	int			iovcnt = 0;
@@ -270,7 +271,7 @@ ca_setreq(struct iked *env, struct iked_sahdr *sh,
 	iov[iovcnt].iov_len = len;
 	iovcnt++;
 
-	if (imsg_composev_proc(env, procid,
+	if (proc_composev_imsg(env, procid,
 	    IMSG_CERTREQ, -1, iov, iovcnt) == -1)
 		goto done;
 
@@ -282,7 +283,7 @@ ca_setreq(struct iked *env, struct iked_sahdr *sh,
 
 int
 ca_setauth(struct iked *env, struct iked_sa *sa,
-    struct ibuf *authmsg, enum iked_procid id)
+    struct ibuf *authmsg, enum privsep_procid id)
 {
 	struct iovec		 iov[3];
 	int			 iovcnt = 3;
@@ -307,7 +308,7 @@ ca_setauth(struct iked *env, struct iked_sa *sa,
 		log_debug("%s: auth length %d", __func__, ibuf_size(authmsg));
 	}
 
-	if (imsg_composev_proc(env, id, IMSG_AUTH, -1, iov, iovcnt) == -1)
+	if (proc_composev_imsg(env, id, IMSG_AUTH, -1, iov, iovcnt) == -1)
 		return (-1);
 	return (0);
 }
@@ -362,7 +363,7 @@ ca_getcert(struct iked *env, struct imsg *imsg)
 	iov[1].iov_base = &type;
 	iov[1].iov_len = sizeof(type);
 
-	if (imsg_composev_proc(env, PROC_IKEV2, cmd, -1, iov, iovcnt) == -1)
+	if (proc_composev_imsg(env, PROC_IKEV2, cmd, -1, iov, iovcnt) == -1)
 		return (-1);
 	return (0);
 }
@@ -597,7 +598,7 @@ ca_reload(struct iked *env)
 		    ibuf_length(env->sc_certreq) == SHA_DIGEST_LENGTH ?
 		    "" : "s");
 
-		(void)imsg_composev_proc(env, PROC_IKEV2, IMSG_CERTREQ, -1,
+		(void)proc_composev_imsg(env, PROC_IKEV2, IMSG_CERTREQ, -1,
 		    iov, iovcnt);
 	}
 

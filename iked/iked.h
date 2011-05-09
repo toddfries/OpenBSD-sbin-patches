@@ -1,4 +1,4 @@
-/*	$OpenBSD: iked.h,v 1.37 2011/05/02 12:39:18 mikeb Exp $	*/
+/*	$OpenBSD: iked.h,v 1.41 2011/05/09 11:15:18 reyk Exp $	*/
 /*	$vantronix: iked.h,v 1.61 2010/06/03 07:57:33 reyk Exp $	*/
 
 /*
@@ -90,7 +90,7 @@ struct ctl_conn {
 TAILQ_HEAD(ctl_connlist, ctl_conn);
 extern  struct ctl_connlist ctl_conns;
 
-enum iked_procid iked_process;
+enum privsep_procid privsep_process;
 
 /*
  * Runtime structures
@@ -439,6 +439,37 @@ struct iked_user {
 };
 RB_HEAD(iked_users, iked_user);
 
+struct privsep {
+	int				 ps_pipes[PROC_MAX][PROC_MAX];
+	struct imsgev			 ps_ievs[PROC_MAX];
+	const char			*ps_title[PROC_MAX];
+	pid_t				 ps_pid[PROC_MAX];
+	struct passwd			*ps_pw;
+
+	struct control_sock		 ps_csock;
+
+	/* Event and signal handlers */
+	struct event			 ps_evsigint;
+	struct event			 ps_evsigterm;
+	struct event			 ps_evsigchld;
+	struct event			 ps_evsighup;
+	struct event			 ps_evsigpipe;
+
+	struct iked			*ps_env;
+};
+
+struct privsep_proc {
+	const char		*p_title;
+	enum privsep_procid	 p_id;
+	int			(*p_cb)(int, struct privsep_proc *,
+				    struct imsg *);
+	pid_t			(*p_init)(struct privsep *,
+				    struct privsep_proc *);
+	const char		*p_chroot;
+	struct privsep		*p_ps;
+	struct iked		*p_env;
+};
+
 /*
  * Daemon configuration
  */
@@ -449,12 +480,6 @@ struct iked {
 	u_int32_t			 sc_opts;
 	u_int8_t			 sc_passive;
 	u_int8_t			 sc_decoupled;
-
-	int				 sc_pipes[PROC_MAX][PROC_MAX];
-	struct imsgev			 sc_ievs[PROC_MAX];
-	const char			*sc_title[PROC_MAX];
-	pid_t				 sc_pid[PROC_MAX];
-	struct passwd			*sc_pw;
 
 	struct iked_policies		 sc_policies;
 	struct iked_policy		*sc_defaultcon;
@@ -474,23 +499,7 @@ struct iked {
 	struct iked_socket		*sc_sock4;
 	struct iked_socket		*sc_sock6;
 
-	struct control_sock		 sc_csock;
-
-	/* Event and signal handlers */
-	struct event			 sc_evsigint;
-	struct event			 sc_evsigterm;
-	struct event			 sc_evsigchld;
-	struct event			 sc_evsighup;
-	struct event			 sc_evsigpipe;
-};
-
-struct iked_proc {
-	const char		*title;
-	enum iked_procid	 id;
-	int			(*cb)(int, struct iked_proc *, struct imsg *);
-	pid_t			(*init)(struct iked *, struct iked_proc *);
-	const char		*chroot;
-	struct iked		*env;
+	struct privsep			 sc_ps;
 };
 
 struct iked_socket {
@@ -504,7 +513,7 @@ struct iked_socket {
 void	 parent_reload(struct iked *, int, const char *);
 
 /* control.c */
-int	 control_init(struct iked *, struct control_sock *);
+int	 control_init(struct privsep *, struct control_sock *);
 int	 control_listen(struct control_sock *);
 void	 control_cleanup(struct control_sock *);
 
@@ -534,20 +543,20 @@ int	 config_setcoupled(struct iked *, u_int);
 int	 config_getcoupled(struct iked *, u_int);
 int	 config_setmode(struct iked *, u_int);
 int	 config_getmode(struct iked *, u_int);
-int	 config_setreset(struct iked *, u_int, enum iked_procid);
+int	 config_setreset(struct iked *, u_int, enum privsep_procid);
 int	 config_getreset(struct iked *, struct imsg *);
 int	 config_setpolicy(struct iked *, struct iked_policy *,
-	    enum iked_procid);
+	    enum privsep_procid);
 int	 config_getpolicy(struct iked *, struct imsg *);
 int	 config_setsocket(struct iked *, struct sockaddr_storage *, in_port_t,
-	    enum iked_procid);
+	    enum privsep_procid);
 int	 config_getsocket(struct iked *env, struct imsg *,
 	    void (*cb)(int, short, void *));
-int	 config_setpfkey(struct iked *, enum iked_procid);
+int	 config_setpfkey(struct iked *, enum privsep_procid);
 int	 config_getpfkey(struct iked *, struct imsg *);
-int	 config_setuser(struct iked *, struct iked_user *, enum iked_procid);
+int	 config_setuser(struct iked *, struct iked_user *, enum privsep_procid);
 int	 config_getuser(struct iked *, struct imsg *);
-int	 config_setcompile(struct iked *, enum iked_procid);
+int	 config_setcompile(struct iked *, enum privsep_procid);
 int	 config_getcompile(struct iked *, struct imsg *);
 
 /* policy.c */
@@ -629,10 +638,10 @@ ssize_t	 dsa_sign_final(struct iked_dsa *, void *, size_t);
 ssize_t	 dsa_verify_final(struct iked_dsa *, void *, size_t);
 
 /* ikev1.c */
-pid_t	 ikev1(struct iked *, struct iked_proc *);
+pid_t	 ikev1(struct privsep *, struct privsep_proc *);
 
 /* ikev2.c */
-pid_t	 ikev2(struct iked *, struct iked_proc *);
+pid_t	 ikev2(struct privsep *, struct privsep_proc *);
 void	 ikev2_recv(struct iked *, struct iked_message *);
 int	 ikev2_init_ike_sa(struct iked *, struct iked_policy *);
 int	 ikev2_sa_negotiate(struct iked_sa *, struct iked_proposals *,
@@ -714,13 +723,13 @@ int	 pfkey_socket(void);
 void	 pfkey_init(struct iked *, int fd);
 
 /* ca.c */
-pid_t	 caproc(struct iked *, struct iked_proc *);
+pid_t	 caproc(struct privsep *, struct privsep_proc *);
 int	 ca_setreq(struct iked *, struct iked_sahdr *, struct iked_static_id *,
-	    u_int8_t, u_int8_t *, size_t, enum iked_procid);
+	    u_int8_t, u_int8_t *, size_t, enum privsep_procid);
 int	 ca_setcert(struct iked *, struct iked_sahdr *, struct iked_id *,
-	    u_int8_t, u_int8_t *, size_t, enum iked_procid);
+	    u_int8_t, u_int8_t *, size_t, enum privsep_procid);
 int	 ca_setauth(struct iked *, struct iked_sa *,
-	    struct ibuf *, enum iked_procid);
+	    struct ibuf *, enum privsep_procid);
 void	 ca_sslinit(void);
 void	 ca_sslerror(void);
 char	*ca_asn1_name(u_int8_t *, size_t);
@@ -732,15 +741,25 @@ void	 timer_register_initiator(struct iked *,
 void	 timer_unregister_initiator(struct iked *);
 
 /* proc.c */
-void	 init_procs(struct iked *, struct iked_proc *, u_int);
-void	 kill_procs(struct iked *);
-void	 init_pipes(struct iked *);
-void	 config_pipes(struct iked *, struct iked_proc *, u_int);
-void	 config_procs(struct iked *, struct iked_proc *, u_int);
-void	 purge_config(struct iked *, u_int8_t);
-void	 dispatch_proc(int, short event, void *);
-pid_t	 run_proc(struct iked *, struct iked_proc *, struct iked_proc *,
-	    u_int, void (*)(struct iked *, void *), void *);
+void	 proc_init(struct privsep *, struct privsep_proc *, u_int);
+void	 proc_kill(struct privsep *);
+void	 proc_config(struct privsep *, struct privsep_proc *, u_int);
+void	 proc_dispatch(int, short event, void *);
+pid_t	 proc_run(struct privsep *, struct privsep_proc *,
+	    struct privsep_proc *, u_int,
+	    void (*)(struct privsep *, void *), void *);
+void	 imsg_event_add(struct imsgev *);
+int	 imsg_compose_event(struct imsgev *, u_int16_t, u_int32_t,
+	    pid_t, int, void *, u_int16_t);
+int	 imsg_composev_event(struct imsgev *, u_int16_t, u_int32_t,
+	    pid_t, int, const struct iovec *, int);
+int	 proc_compose_imsg(struct iked *, enum privsep_procid,
+	    u_int16_t, int, void *, u_int16_t);
+int	 proc_composev_imsg(struct iked *, enum privsep_procid,
+	    u_int16_t, int, const struct iovec *, int);
+int	 proc_forward_imsg(struct iked *, struct imsg *,
+	    enum privsep_procid);
+void	 proc_flush_imsg(struct iked *, enum privsep_procid);
 
 /* util.c */
 void	 socket_set_blockmode(int, enum blockmodes);
@@ -776,18 +795,6 @@ int	 expand_string(char *, size_t, const char *, const char *);
 u_int8_t *string2unicode(const char *, size_t *);
 
 /* imsg_util.c */
-void	 imsg_event_add(struct imsgev *);
-int	 imsg_compose_event(struct imsgev *, u_int16_t, u_int32_t,
-	    pid_t, int, void *, u_int16_t);
-int	 imsg_composev_event(struct imsgev *, u_int16_t, u_int32_t,
-	    pid_t, int, const struct iovec *, int);
-int	 imsg_compose_proc(struct iked *, enum iked_procid,
-	    u_int16_t, int, void *, u_int16_t);
-int	 imsg_composev_proc(struct iked *, enum iked_procid,
-	    u_int16_t, int, const struct iovec *, int);
-int	 imsg_forward_proc(struct iked *, struct imsg *,
-	    enum iked_procid);
-void	 imsg_flush_proc(struct iked *, enum iked_procid);
 struct ibuf *
 	 ibuf_new(void *, size_t);
 struct ibuf *
