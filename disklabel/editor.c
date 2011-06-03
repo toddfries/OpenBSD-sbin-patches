@@ -1,4 +1,4 @@
-/*	$OpenBSD: editor.c,v 1.252 2011/04/16 23:01:17 krw Exp $	*/
+/*	$OpenBSD: editor.c,v 1.256 2011/05/24 15:27:56 otto Exp $	*/
 
 /*
  * Copyright (c) 1997-2000 Todd C. Miller <Todd.Miller@courtesan.com>
@@ -77,8 +77,12 @@ const struct space_allocation alloc_big[] = {
 	{  MEG(900),         GIG(2),   5, "/usr"	},
 	{  MEG(512),         GIG(1),   3, "/usr/X11R6"	},
 	{    GIG(2),        GIG(10),  10, "/usr/local"	},
-	{    GIG(1),         GIG(2),   3, "/usr/src"	},
-	{    GIG(1),         GIG(2),   3, "/usr/obj"	},
+	{    GIG(1),         GIG(2),   2, "/usr/src"	},
+#ifdef STATICLINKING
+	{ MEG(2600),         GIG(3),   4, "/usr/obj"	},
+#else
+	{ MEG(1300),         GIG(2),   4, "/usr/obj"	},
+#endif
 	{    GIG(1),       GIG(300),  45, "/home"	}
 	/* Anything beyond this leave for the user to decide */
 };
@@ -733,11 +737,11 @@ editor_resize(struct disklabel *lp, char *p)
 		fputs("Cannot resize spoofed partition\n", stderr);
 		return;
 	}
-	secs = getuint(lp, "grow (+) or shrink (-) (with unit)",
-	    "amount to grow (+) or shrink (-) partition including unit",
-	    0, editor_countfree(lp), 0, DO_CONVERSIONS);
+	secs = getuint(lp, "[+|-]new size (with unit)",
+	    "new size or amount to grow (+) or shrink (-) partition including unit",
+	    sz, editor_countfree(lp), 0, DO_CONVERSIONS);
 
-	if (secs == 0 || secs == -1) {
+	if (secs <= 0) {
 		fputs("Command aborted\n", stderr);
 		return;
 	}
@@ -749,16 +753,13 @@ editor_resize(struct disklabel *lp, char *p)
 	else
 		secs = ((secs - cylsecs + 1) / cylsecs) * cylsecs;
 #endif
-	if (DL_GETPOFFSET(pp) + sz + secs > ending_sector) {
+	if (DL_GETPOFFSET(pp) + secs > ending_sector) {
 		fputs("Amount too big\n", stderr);
 		return;
 	}
-	if (sz + secs < 0) {
-		fputs("Amount too small\n", stderr);
-		return;
-	}
 
-	DL_SETPSIZE(pp, sz + secs);
+	DL_SETPSIZE(pp, secs);
+	get_bsize(&label, partno);
 
 	/*
 	 * Pack partitions above the resized partition, leaving unused
@@ -789,6 +790,7 @@ editor_resize(struct disklabel *lp, char *p)
 			fputs("No room left for all partitions\n", stderr);
 			return;
 		}
+		get_bsize(&label, i);
 		prev = pp;
 	}
 	*lp = label;
@@ -1201,13 +1203,19 @@ getuint(struct disklabel *lp, char *prompt, char *helpstring,
 					break;
 				case '%':
 					buf[--n] = '\0';
-					percent = strtod(buf, NULL) / 100.0;
+					p = &buf[0];
+					if (*p == '+' || *p == '-')
+						operator = *p++;
+					percent = strtod(p, NULL) / 100.0;
 					snprintf(buf, sizeof(buf), "%lld",
 					    DL_GETDSIZE(lp));
 					break;
 				case '&':
 					buf[--n] = '\0';
-					percent = strtod(buf, NULL) / 100.0;
+					p = &buf[0];
+					if (*p == '+' || *p == '-')
+						operator = *p++;
+					percent = strtod(p, NULL) / 100.0;
 					snprintf(buf, sizeof(buf), "%lld",
 					    maxval);
 					break;
@@ -1750,23 +1758,23 @@ editor_help(void)
 {
 	puts("Available commands:");
 	puts(
-"  ? | h    - show help                  n [part] - set mount point\n"
-"  A        - auto partition all space   p [unit] - print partitions\n"
-"  a [part] - add partition              q        - quit & save changes\n"
-"  b        - set OpenBSD boundaries     R [part] - resize a partition\n"
-"  c [part] - change partition size      r        - display free space\n"
-"  D        - reset label to default     s [path] - save label to file\n"
-"  d [part] - delete partition           U        - undo all changes\n"
-"  e        - edit drive parameters      u        - undo last change\n"
-"  g [d|u]  - [d]isk or [u]ser geometry  w        - write label to disk\n"
-"  i        - modify disklabel UID       X        - toggle expert mode\n"
-"  l [unit] - print disk label header    x        - exit & lose changes\n"
-"  M        - disklabel(8) man page      z        - delete all partitions\n"
-"  m [part] - modify partition\n"
+" ? | h    - show help                 n [part] - set mount point\n"
+" A        - auto partition all space  p [unit] - print partitions\n"
+" a [part] - add partition             q        - quit & save changes\n"
+" b        - set OpenBSD boundaries    R [part] - resize auto allocated partition\n"
+" c [part] - change partition size     r        - display free space\n"
+" D        - reset label to default    s [path] - save label to file\n"
+" d [part] - delete partition          U        - undo all changes\n"
+" e        - edit drive parameters     u        - undo last change\n"
+" g [d|u]  - [d]isk or [u]ser geometry w        - write label to disk\n"
+" i        - modify disklabel UID      X        - toggle expert mode\n"
+" l [unit] - print disk label header   x        - exit & lose changes\n"
+" M        - disklabel(8) man page     z        - delete all partitions\n"
+" m [part] - modify partition\n"
 "\n"
 "Suffixes can be used to indicate units other than sectors:\n"
-"\t'b' (bytes), 'k' (kilobytes), 'm' (megabytes), 'g' (gigabytes)\n"
-"\t'c' (cylinders), '%' (% of total disk), '&' (% of free space).\n"
+" 'b' (bytes), 'k' (kilobytes), 'm' (megabytes), 'g' (gigabytes) 't' (terabytes)\n"
+" 'c' (cylinders), '%' (% of total disk), '&' (% of free space).\n"
 "Values in non-sector units are truncated to the nearest cylinder boundary.");
 
 }
