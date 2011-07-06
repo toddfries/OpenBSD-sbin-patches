@@ -1,4 +1,4 @@
-/*	$OpenBSD: pfctl_altq.c,v 1.94 2008/07/25 17:43:44 martynas Exp $	*/
+/*	$OpenBSD: pfctl_altq.c,v 1.97 2011/07/04 01:07:43 henning Exp $	*/
 
 /*
  * Copyright (c) 2002
@@ -546,18 +546,10 @@ print_cbq_opts(const struct pf_altq *a)
 			printf(" red");
 		if (opts->flags & CBQCLF_ECN)
 			printf(" ecn");
-		if (opts->flags & CBQCLF_RIO)
-			printf(" rio");
-		if (opts->flags & CBQCLF_CLEARDSCP)
-			printf(" cleardscp");
-		if (opts->flags & CBQCLF_FLOWVALVE)
-			printf(" flowvalve");
 		if (opts->flags & CBQCLF_BORROW)
 			printf(" borrow");
 		if (opts->flags & CBQCLF_WRR)
 			printf(" wrr");
-		if (opts->flags & CBQCLF_EFFICIENT)
-			printf(" efficient");
 		if (opts->flags & CBQCLF_ROOTCLASS)
 			printf(" root");
 		if (opts->flags & CBQCLF_DEFCLASS)
@@ -633,10 +625,6 @@ print_priq_opts(const struct pf_altq *a)
 			printf(" red");
 		if (opts->flags & PRCF_ECN)
 			printf(" ecn");
-		if (opts->flags & PRCF_RIO)
-			printf(" rio");
-		if (opts->flags & PRCF_CLEARDSCP)
-			printf(" cleardscp");
 		if (opts->flags & PRCF_DEFAULTCLASS)
 			printf(" default");
 		printf(" ) ");
@@ -849,10 +837,6 @@ print_hfsc_opts(const struct pf_altq *a, const struct node_queue_opt *qopts)
 			printf(" red");
 		if (opts->flags & HFCF_ECN)
 			printf(" ecn");
-		if (opts->flags & HFCF_RIO)
-			printf(" rio");
-		if (opts->flags & HFCF_CLEARDSCP)
-			printf(" cleardscp");
 		if (opts->flags & HFCF_DEFAULTCLASS)
 			printf(" default");
 		if (opts->rtsc_m2 != 0)

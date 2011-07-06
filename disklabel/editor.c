@@ -1,4 +1,4 @@
-/*	$OpenBSD: editor.c,v 1.256 2011/05/24 15:27:56 otto Exp $	*/
+/*	$OpenBSD: editor.c,v 1.258 2011/07/05 21:39:08 krw Exp $	*/
 
 /*
  * Copyright (c) 1997-2000 Todd C. Miller <Todd.Miller@courtesan.com>
@@ -667,7 +667,8 @@ cylinderalign:
 		/* Everything seems ok so configure the partition. */
 		DL_SETPSIZE(pp, secs);
 		DL_SETPOFFSET(pp, chunkstart);
-		fragsize = 2048;
+		fragsize = (lp->d_secsize == DEV_BSIZE) ? 2048 :
+		    lp->d_secsize;
 		if (secs * lp->d_secsize > 128ULL * 1024 * 1024 * 1024)
 			fragsize *= 2;
 		if (secs * lp->d_secsize > 512ULL * 1024 * 1024 * 1024)
@@ -2182,9 +2183,8 @@ get_geometry(int f, struct disklabel **dgpp)
 	/* Get disk geometry */
 	if ((disk_geop = calloc(1, sizeof(struct disklabel))) == NULL)
 		errx(4, "out of memory");
-	if (ioctl(f, DIOCGPDINFO, disk_geop) < 0 &&
-	    ioctl(f, DIOCGDINFO, disk_geop) < 0)
-		err(4, "ioctl DIOCGDINFO");
+	if (ioctl(f, DIOCGPDINFO, disk_geop) < 0)
+		err(4, "ioctl DIOCGPDINFO");
 	*dgpp = disk_geop;
 }
 

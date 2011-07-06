@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.599 2011/04/06 13:19:55 claudio Exp $	*/
+/*	$OpenBSD: parse.y,v 1.602 2011/07/04 03:36:14 henning Exp $	*/
 
 /*
  * Copyright (c) 2001 Markus Friedl.  All rights reserved.
@@ -63,13 +63,11 @@
 
 static struct pfctl	*pf = NULL;
 static int		 debug = 0;
-static int		 rulestate = 0;
 static u_int16_t	 returnicmpdefault =
 			    (ICMP_UNREACH << 8) | ICMP_UNREACH_PORT;
 static u_int16_t	 returnicmp6default =
 			    (ICMP6_DST_UNREACH << 8) | ICMP6_DST_UNREACH_NOPORT;
 static int		 blockpolicy = PFRULE_DROP;
-static int		 require_order = 0;
 static int		 default_statelock;
 
 TAILQ_HEAD(files, file)		 files = TAILQ_HEAD_INITIALIZER(files);
@@ -104,14 +102,6 @@ int		 symset(const char *, const char *, int);
 char		*symget(const char *);
 
 int		 atoul(char *, u_long *);
-
-enum {
-	PFCTL_STATE_NONE,
-	PFCTL_STATE_OPTION,
-	PFCTL_STATE_QUEUE,
-	PFCTL_STATE_NAT,
-	PFCTL_STATE_FILTER
-};
 
 struct node_proto {
 	u_int8_t		 proto;
@@ -362,7 +352,6 @@ int		 expand_queue(struct pf_altq *, struct node_if *,
 		    struct node_queue_opt *);
 int		 expand_skip_interface(struct node_if *);
 
-int	 check_rulestate(int);
 int	 getservice(char *);
 int	 rule_label(struct pf_rule *, char *);
 
@@ -457,9 +446,9 @@ int	parseport(char *, struct range *r, int);
 %token	NOROUTE URPFFAILED FRAGMENT USER GROUP MAXMSS MAXIMUM TTL TOS DROP TABLE
 %token	REASSEMBLE ANCHOR
 %token	SET OPTIMIZATION TIMEOUT LIMIT LOGINTERFACE BLOCKPOLICY RANDOMID
-%token	REQUIREORDER SYNPROXY FINGERPRINTS NOSYNC DEBUG SKIP HOSTID
+%token	SYNPROXY FINGERPRINTS NOSYNC DEBUG SKIP HOSTID
 %token	ANTISPOOF FOR INCLUDE MATCHES
-%token	BITMASK RANDOM SOURCEHASH ROUNDROBIN STATICPORT PROBABILITY
+%token	BITMASK RANDOM SOURCEHASH ROUNDROBIN LEASTSTATES STATICPORT PROBABILITY
 %token	ALTQ CBQ PRIQ HFSC BANDWIDTH TBRSIZE LINKSHARE REALTIME UPPERLIMIT
 %token	QUEUE PRIORITY QLIMIT RTABLE RDOMAIN
 %token	LOAD RULESET_OPTIMIZATION
@@ -577,15 +566,9 @@ optnodf		: /* empty */	{ $$ = 0; }
 		;
 
 option		: SET REASSEMBLE yesno optnodf		{
-			if (check_rulestate(PFCTL_STATE_OPTION))
-				YYERROR;
 			pfctl_set_reassembly(pf, $3, $4);
 		}
 		| SET OPTIMIZATION STRING		{
-			if (check_rulestate(PFCTL_STATE_OPTION)) {
-				free($3);
-				YYERROR;
-			}
 			if (pfctl_set_optimization(pf, $3) != 0) {
 				yyerror("unknown optimization %s", $3);
 				free($3);
@@ -604,10 +587,6 @@ option		: SET REASSEMBLE yesno optnodf		{
 		| SET LIMIT limit_spec
 		| SET LIMIT '{' optnl limit_list '}'
 		| SET LOGINTERFACE stringall		{
-			if (check_rulestate(PFCTL_STATE_OPTION)) {
-				free($3);
-				YYERROR;
-			}
 			if (pfctl_set_logif(pf, $3) != 0) {
 				yyerror("error setting loginterface %s", $3);
 				free($3);
@@ -628,30 +607,16 @@ option		: SET REASSEMBLE yesno optnodf		{
 		| SET BLOCKPOLICY DROP	{
 			if (pf->opts & PF_OPT_VERBOSE)
 				printf("set block-policy drop\n");
-			if (check_rulestate(PFCTL_STATE_OPTION))
-				YYERROR;
 			blockpolicy = PFRULE_DROP;
 		}
 		| SET BLOCKPOLICY RETURN {
 			if (pf->opts & PF_OPT_VERBOSE)
 				printf("set block-policy return\n");
-			if (check_rulestate(PFCTL_STATE_OPTION))
-				YYERROR;
 			blockpolicy = PFRULE_RETURN;
-		}
-		| SET REQUIREORDER yesno {
-			if (pf->opts & PF_OPT_VERBOSE)
-				printf("set require-order %s\n",
-				    $3 == 1 ? "yes" : "no");
-			require_order = $3;
 		}
 		| SET FINGERPRINTS STRING {
 			if (pf->opts & PF_OPT_VERBOSE)
 				printf("set fingerprints \"%s\"\n", $3);
-			if (check_rulestate(PFCTL_STATE_OPTION)) {
-				free($3);
-				YYERROR;
-			}
 			if (!pf->anchor->name[0]) {
 				if (pfctl_file_fingerprints(pf->dev,
 				    pf->opts, $3)) {
@@ -676,10 +641,6 @@ option		: SET REASSEMBLE yesno optnodf		{
 			default_statelock = $3;
 		}
 		| SET DEBUG STRING {
-			if (check_rulestate(PFCTL_STATE_OPTION)) {
-				free($3);
-				YYERROR;
-			}
 			if (pfctl_set_debug(pf, $3) != 0) {
 				yyerror("error setting debuglevel %s", $3);
 				free($3);
@@ -795,12 +756,6 @@ anchorrule	: ANCHOR anchorname dir quick interface af proto fromto
 		{
 			struct pf_rule	r;
 			struct node_proto	*proto;
-
-			if (check_rulestate(PFCTL_STATE_FILTER)) {
-				if ($2)
-					free($2);
-				YYERROR;
-			}
 
 			if ($2 && ($2[0] == '_' || strstr($2, "/_") != NULL)) {
 				free($2);
@@ -1037,9 +992,6 @@ antispoof	: ANTISPOOF logquick antispoof_ifspc af antispoof_opts {
 			struct node_host	*h = NULL, *hh;
 			struct node_if		*i, *j;
 
-			if (check_rulestate(PFCTL_STATE_FILTER))
-				YYERROR;
-
 			for (i = $3; i; i = i->next) {
 				bzero(&r, sizeof(r));
 
@@ -1230,6 +1182,8 @@ table_opt	: STRING		{
 				table_opts.flags |= PFR_TFLAG_PERSIST;
 			else if (!strcmp($1, "counters"))
 				table_opts.flags |= PFR_TFLAG_COUNTERS;
+			else if (!strcmp($1, "cost"))
+				table_opts.flags |= PFR_TFLAG_COST;
 			else {
 				yyerror("invalid table option '%s'", $1);
 				free($1);
@@ -1293,9 +1247,6 @@ table_opt	: STRING		{
 altqif		: ALTQ interface queue_opts QUEUE qassign {
 			struct pf_altq	a;
 
-			if (check_rulestate(PFCTL_STATE_QUEUE))
-				YYERROR;
-
 			memset(&a, 0, sizeof(a));
 			if ($3.scheduler.qtype == ALTQT_NONE) {
 				yyerror("no scheduler specified!");
@@ -1317,13 +1268,7 @@ altqif		: ALTQ interface queue_opts QUEUE qassign {
 queuespec	: QUEUE STRING interface queue_opts qassign {
 			struct pf_altq	a;
 
-			if (check_rulestate(PFCTL_STATE_QUEUE)) {
-				free($2);
-				YYERROR;
-			}
-
 			memset(&a, 0, sizeof(a));
-
 			if (strlcpy(a.qname, $2, sizeof(a.qname)) >=
 			    sizeof(a.qname)) {
 				yyerror("queue name too long (max "
@@ -1512,8 +1457,6 @@ cbqflags_item	: STRING	{
 				$$ = CBQCLF_RED;
 			else if (!strcmp($1, "ecn"))
 				$$ = CBQCLF_RED|CBQCLF_ECN;
-			else if (!strcmp($1, "rio"))
-				$$ = CBQCLF_RIO;
 			else {
 				yyerror("unknown cbq flag \"%s\"", $1);
 				free($1);
@@ -1534,8 +1477,6 @@ priqflags_item	: STRING	{
 				$$ = PRCF_RED;
 			else if (!strcmp($1, "ecn"))
 				$$ = PRCF_RED|PRCF_ECN;
-			else if (!strcmp($1, "rio"))
-				$$ = PRCF_RIO;
 			else {
 				yyerror("unknown priq flag \"%s\"", $1);
 				free($1);
@@ -1634,8 +1575,6 @@ hfscopts_item	: LINKSHARE bandwidth				{
 				hfsc_opts.flags |= HFCF_RED;
 			else if (!strcmp($1, "ecn"))
 				hfsc_opts.flags |= HFCF_RED|HFCF_ECN;
-			else if (!strcmp($1, "rio"))
-				hfsc_opts.flags |= HFCF_RIO;
 			else {
 				yyerror("unknown hfsc flag \"%s\"", $1);
 				free($1);
@@ -1687,11 +1626,7 @@ pfrule		: action dir logquick interface af proto fromto
 			int			 adaptive = 0;
 			int			 defaults = 0;
 
-			if (check_rulestate(PFCTL_STATE_FILTER))
-				YYERROR;
-
 			memset(&r, 0, sizeof(r));
-
 			r.action = $1.b1;
 			switch ($1.b2) {
 			case PFRULE_RETURNRST:
@@ -2035,24 +1970,32 @@ pfrule		: action dir logquick interface af proto fromto
 				    $8.route.host->addr.type == PF_ADDR_TABLE ||
 				    DYNIF_MULTIADDR($8.route.host->addr)))
 					r.route.opts |= PF_POOL_ROUNDROBIN;
-				if ((r.route.opts & PF_POOL_TYPEMASK) !=
-				    PF_POOL_ROUNDROBIN &&
+				if (((r.route.opts & PF_POOL_TYPEMASK) !=
+				    PF_POOL_ROUNDROBIN) &&
+				    ((r.route.opts & PF_POOL_TYPEMASK) !=
+				    PF_POOL_LEASTSTATES) &&
 				    disallow_table($8.route.host,
 				    "tables are only "
-				    "supported in round-robin routing pools"))
+				    "supported in round-robin or "
+				    "least-states routing pools"))
 					YYERROR;
-				if ((r.route.opts & PF_POOL_TYPEMASK) !=
-				    PF_POOL_ROUNDROBIN &&
+				if (((r.route.opts & PF_POOL_TYPEMASK) !=
+				    PF_POOL_ROUNDROBIN) &&
+				    ((r.route.opts & PF_POOL_TYPEMASK) !=
+				    PF_POOL_LEASTSTATES) &&
 				    disallow_alias($8.route.host,
 				    "interface (%s) "
-				    "is only supported in round-robin "
-				    "routing pools"))
+				    "is only supported in round-robin or "
+				    "least-states routing pools"))
 					YYERROR;
 				if ($8.route.host->next != NULL) {
-					if ((r.route.opts & PF_POOL_TYPEMASK) !=
-					    PF_POOL_ROUNDROBIN) {
+					if (((r.route.opts & PF_POOL_TYPEMASK) !=
+					    PF_POOL_ROUNDROBIN) &&
+					    ((r.route.opts & PF_POOL_TYPEMASK) !=
+					    PF_POOL_LEASTSTATES)) {
 						yyerror("r.route.opts must "
-						    "be PF_POOL_ROUNDROBIN");
+						    "be PF_POOL_ROUNDROBIN "
+						    "or PF_POOL_LEASTSTATES");
 						YYERROR;
 					}
 				}
@@ -2297,6 +2240,8 @@ filter_opt	: USER uids {
 			filter_opts.route.host = $2;
 			filter_opts.route.rt = PF_ROUTETO;
 			filter_opts.route.pool_opts = $3.type | $3.opts;
+			memcpy(&filter_opts.rroute.pool_opts, &$3,
+			    sizeof(filter_opts.rroute.pool_opts));
 			if ($3.key != NULL)
 				filter_opts.route.key = $3.key;
 		}
@@ -3715,6 +3660,13 @@ pool_opt	: BITMASK	{
 			}
 			pool_opts.type = PF_POOL_ROUNDROBIN;
 		}
+		| LEASTSTATES	{
+			if (pool_opts.type) {
+				yyerror("pool type cannot be redefined");
+				YYERROR;
+			}
+			pool_opts.type = PF_POOL_LEASTSTATES;
+		}
 		| STATICPORT	{
 			if (pool_opts.staticport) {
 				yyerror("static-port cannot be redefined");
@@ -3833,10 +3785,6 @@ routespec	: route_host			{ $$ = $1; }
 
 timeout_spec	: STRING NUMBER
 		{
-			if (check_rulestate(PFCTL_STATE_OPTION)) {
-				free($1);
-				YYERROR;
-			}
 			if ($2 < 0 || $2 > UINT_MAX) {
 				yyerror("only positive values permitted");
 				YYERROR;
@@ -3856,10 +3804,6 @@ timeout_list	: timeout_list comma timeout_spec optnl
 
 limit_spec	: STRING NUMBER
 		{
-			if (check_rulestate(PFCTL_STATE_OPTION)) {
-				free($1);
-				YYERROR;
-			}
 			if ($2 < 0 || $2 > UINT_MAX) {
 				yyerror("only positive values permitted");
 				YYERROR;
@@ -4544,7 +4488,6 @@ collapse_redirspec(struct pf_pool *rpool, struct pf_rule *r,
 	struct pf_rule_addr ra;
 	int	i = 0;
 
-
 	if (!rs || !rs->rdr || rs->rdr->host == NULL) {
 		rpool->addr.type = PF_ADDR_NONE;
 		return (0);
@@ -4579,8 +4522,10 @@ collapse_redirspec(struct pf_pool *rpool, struct pf_rule *r,
 		return (0);
 	} else {		/* more than one address */
 		if (rs->pool_opts.type &&
-		     rs->pool_opts.type != PF_POOL_ROUNDROBIN) {
-			yyerror("only round-robin valid for multiple "
+		     (rs->pool_opts.type != PF_POOL_ROUNDROBIN) &&
+		     (rs->pool_opts.type != PF_POOL_LEASTSTATES)) {
+			yyerror("only round-robin or "
+			    "least-states valid for multiple "
 			    "translation or routing addresses");
 			return (1);
 		}
@@ -4605,6 +4550,9 @@ collapse_redirspec(struct pf_pool *rpool, struct pf_rule *r,
                 }
 	}
 	if (tbl) {
+		if (rs->pool_opts.type == PF_POOL_LEASTSTATES)
+			tbl->pt_flags |= PFR_TFLAG_COST;
+
 		if ((pf->opts & PF_OPT_NOACTION) == 0 &&
 		     pf_opt_create_table(pf, tbl))
 				return (1);
@@ -4612,7 +4560,8 @@ collapse_redirspec(struct pf_pool *rpool, struct pf_rule *r,
 		pf->tdirty = 1;
 
 		if (pf->opts & PF_OPT_VERBOSE)
-			print_tabledef(tbl->pt_name, PFR_TFLAG_CONST,
+			print_tabledef(tbl->pt_name,
+			    PFR_TFLAG_CONST | tbl->pt_flags,
 			    1, &tbl->pt_nodes);
 
 		memset(&rpool->addr, 0, sizeof(rpool->addr));
@@ -5018,18 +4967,6 @@ freehostlist(struct node_host *h)
 #undef LOOP_THROUGH
 
 int
-check_rulestate(int desired_state)
-{
-	if (require_order && (rulestate > desired_state)) {
-		yyerror("Rules must be in order: options, normalization, "
-		    "queueing, translation, filtering");
-		return (1);
-	}
-	rulestate = desired_state;
-	return (0);
-}
-
-int
 kw_cmp(const void *k, const void *e)
 {
 	return (strcmp(k, ((const struct keywords *)e)->k_name));
@@ -5080,6 +5017,7 @@ lookup(char *s)
 		{ "inet6",		INET6},
 		{ "keep",		KEEP},
 		{ "label",		LABEL},
+		{ "least-states",	LEASTSTATES},
 		{ "limit",		LIMIT},
 		{ "linkshare",		LINKSHARE},
 		{ "load",		LOAD},
@@ -5123,7 +5061,6 @@ lookup(char *s)
 		{ "reassemble",		REASSEMBLE},
 		{ "received-on",	RECEIVEDON},
 		{ "reply-to",		REPLYTO},
-		{ "require-order",	REQUIREORDER},
 		{ "return",		RETURN},
 		{ "return-icmp",	RETURNICMP},
 		{ "return-icmp6",	RETURNICMP6},
@@ -5520,12 +5457,10 @@ parse_config(char *filename, struct pfctl *xpf)
 
 	pf = xpf;
 	errors = 0;
-	rulestate = PFCTL_STATE_NONE;
 	returnicmpdefault = (ICMP_UNREACH << 8) | ICMP_UNREACH_PORT;
 	returnicmp6default =
 	    (ICMP6_DST_UNREACH << 8) | ICMP6_DST_UNREACH_NOPORT;
 	blockpolicy = PFRULE_DROP;
-	require_order = 0;
 
 	if ((file = pushfile(filename, 0)) == NULL) {
 		warn("cannot open the main config file!");
