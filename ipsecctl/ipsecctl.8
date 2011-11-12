@@ -1,4 +1,4 @@
-.\"	$OpenBSD: ipsecctl.8,v 1.25 2007/05/31 19:19:44 jmc Exp $
+.\"	$OpenBSD: ipsecctl.8,v 1.28 2011/11/08 16:49:32 jmc Exp $
 .\"
 .\" Copyright (c) 2004, 2005 Hans-Joerg Hoexer <hshoexer@openbsd.org>
 .\"
@@ -14,7 +14,7 @@
 .\" ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 .\" OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 .\"
-.Dd $Mdocdate: May 31 2007 $
+.Dd $Mdocdate: November 8 2011 $
 .Dt IPSECCTL 8
 .Os
 .Sh NAME
@@ -23,9 +23,9 @@
 .Sh SYNOPSIS
 .Nm ipsecctl
 .Op Fl dFkmnv
-.Oo Fl D Ar macro Ns =
-.Ar value Oc
+.Op Fl D Ar macro Ns = Ns Ar value
 .Op Fl f Ar file
+.Op Fl i Ar fifo
 .Op Fl s Ar modifier
 .Sh DESCRIPTION
 The
@@ -67,6 +67,13 @@ option flushes the SPD and the SAD.
 .It Fl f Ar file
 Load the rules contained in
 .Ar file .
+.It Fl i Ar fifo
+If given, the
+.Fl i
+option specifies an alternate FIFO instead of
+.Pa /var/run/isakmpd.fifo ,
+used to talk to
+.Xr isakmpd 8 .
 .It Fl k
 Show secret keying material when printing the active SAD entries.
 .It Fl m
