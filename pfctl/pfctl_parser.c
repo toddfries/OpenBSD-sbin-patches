@@ -1,4 +1,4 @@
-/*	$OpenBSD: pfctl_parser.c,v 1.281 2011/10/13 18:30:54 claudio Exp $ */
+/*	$OpenBSD: pfctl_parser.c,v 1.283 2011/11/23 10:24:37 henning Exp $ */
 
 /*
  * Copyright (c) 2001 Daniel Hartmeier
@@ -63,7 +63,7 @@
 #include "pfctl.h"
 
 void		 print_op (u_int8_t, const char *, const char *);
-void		 print_port (u_int8_t, u_int16_t, u_int16_t, const char *);
+void		 print_port (u_int8_t, u_int16_t, u_int16_t, const char *, int);
 void		 print_ugid (u_int8_t, unsigned, unsigned, const char *, unsigned);
 void		 print_flags (u_int8_t);
 void		 print_fromto(struct pf_rule_addr *, pf_osfp_t,
@@ -360,12 +360,13 @@ print_op(u_int8_t op, const char *a1, const char *a2)
 }
 
 void
-print_port(u_int8_t op, u_int16_t p1, u_int16_t p2, const char *proto)
+print_port(u_int8_t op, u_int16_t p1, u_int16_t p2, const char *proto, int opts)
 {
 	char		 a1[6], a2[6];
-	struct servent	*s;
+	struct servent	*s = NULL;
 
-	s = getservbyport(p1, proto);
+	if (opts & PF_OPT_PORTNAMES)
+		s = getservbyport(p1, proto);
 	p1 = ntohs(p1);
 	p2 = ntohs(p2);
 	snprintf(a1, sizeof(a1), "%u", p1);
@@ -403,9 +404,10 @@ print_flags(u_int8_t f)
 
 void
 print_fromto(struct pf_rule_addr *src, pf_osfp_t osfp, struct pf_rule_addr *dst,
-    sa_family_t af, u_int8_t proto, int verbose)
+    sa_family_t af, u_int8_t proto, int opts)
 {
 	char buf[PF_OSFP_LEN*3];
+	int verbose = opts & (PF_OPT_VERBOSE2 | PF_OPT_DEBUG);
 	if (src->addr.type == PF_ADDR_ADDRMASK &&
 	    dst->addr.type == PF_ADDR_ADDRMASK &&
 	    PF_AZERO(&src->addr.v.a.addr, AF_INET6) &&
@@ -424,7 +426,7 @@ print_fromto(struct pf_rule_addr *src, pf_osfp_t osfp, struct pf_rule_addr *dst,
 		if (src->port_op)
 			print_port(src->port_op, src->port[0],
 			    src->port[1],
-			    proto == IPPROTO_TCP ? "tcp" : "udp");
+			    proto == IPPROTO_TCP ? "tcp" : "udp", opts);
 		if (osfp != PF_OSFP_ANY)
 			printf(" os \"%s\"", pfctl_lookup_fingerprint(osfp, buf,
 			    sizeof(buf)));
@@ -436,7 +438,7 @@ print_fromto(struct pf_rule_addr *src, pf_osfp_t osfp, struct pf_rule_addr *dst,
 		if (dst->port_op)
 			print_port(dst->port_op, dst->port[0],
 			    dst->port[1],
-			    proto == IPPROTO_TCP ? "tcp" : "udp");
+			    proto == IPPROTO_TCP ? "tcp" : "udp", opts);
 	}
 }
 
@@ -675,7 +677,7 @@ print_src_node(struct pf_src_node *sn, int opts)
 }
 
 void
-print_rule(struct pf_rule *r, const char *anchor_call, int verbose)
+print_rule(struct pf_rule *r, const char *anchor_call, int opts)
 {
 	static const char *actiontypes[] = { "pass", "block", "scrub",
 	    "no scrub", "nat", "no nat", "binat", "no binat", "rdr", "no rdr",
@@ -683,7 +685,8 @@ print_rule(struct pf_rule *r, const char *anchor_call, int verbose)
 	static const char *anchortypes[] = { "anchor", "anchor", "anchor",
 	    "anchor", "nat-anchor", "nat-anchor", "binat-anchor",
 	    "binat-anchor", "rdr-anchor", "rdr-anchor" };
-	int	i, opts;
+	int	i, ropts;
+	int	verbose = opts & (PF_OPT_VERBOSE2 | PF_OPT_DEBUG);
 	char	*p;
 
 	if (verbose)
@@ -796,7 +799,7 @@ print_rule(struct pf_rule *r, const char *anchor_call, int verbose)
 			printf(" proto %u", r->proto);
 	}
 	print_fromto(&r->src, r->os_fingerprint, &r->dst, r->af, r->proto,
-	    verbose);
+	    opts);
 	if (r->rcv_ifname[0])
 		printf(" received-on %s", r->rcv_ifname);
 	if (r->uid.op)
@@ -840,26 +843,26 @@ print_rule(struct pf_rule *r, const char *anchor_call, int verbose)
 	if (r->tos)
 		printf(" tos 0x%2.2x", r->tos);
 
-	opts = 0;
+	ropts = 0;
 	if (r->max_states || r->max_src_nodes || r->max_src_states)
-		opts = 1;
+		ropts = 1;
 	if (r->rule_flag & PFRULE_NOSYNC)
-		opts = 1;
+		ropts = 1;
 	if (r->rule_flag & PFRULE_SRCTRACK)
-		opts = 1;
+		ropts = 1;
 	if (r->rule_flag & PFRULE_IFBOUND)
-		opts = 1;
+		ropts = 1;
 	if (r->rule_flag & PFRULE_STATESLOPPY)
-		opts = 1;
+		ropts = 1;
 	if (r->rule_flag & PFRULE_PFLOW)
-		opts = 1;
-	for (i = 0; !opts && i < PFTM_MAX; ++i)
+		ropts = 1;
+	for (i = 0; !ropts && i < PFTM_MAX; ++i)
 		if (r->timeout[i])
-			opts = 1;
+			ropts = 1;
 
 	if (!r->keep_state && r->action == PF_PASS && !anchor_call[0])
 		printf(" no state");
-	else if (r->keep_state == PF_STATE_NORMAL && opts)
+	else if (r->keep_state == PF_STATE_NORMAL && ropts)
 		printf(" keep state");
 	else if (r->keep_state == PF_STATE_MODULATE)
 		printf(" modulate state");
@@ -880,56 +883,56 @@ print_rule(struct pf_rule *r, const char *anchor_call, int verbose)
 		}
 		printf(" probability %s%%", buf);
 	}
-	if (opts) {
+	if (ropts) {
 		printf(" (");
 		if (r->max_states) {
 			printf("max %u", r->max_states);
-			opts = 0;
+			ropts = 0;
 		}
 		if (r->rule_flag & PFRULE_NOSYNC) {
-			if (!opts)
+			if (!ropts)
 				printf(", ");
 			printf("no-sync");
-			opts = 0;
+			ropts = 0;
 		}
 		if (r->rule_flag & PFRULE_SRCTRACK) {
-			if (!opts)
+			if (!ropts)
 				printf(", ");
 			printf("source-track");
 			if (r->rule_flag & PFRULE_RULESRCTRACK)
 				printf(" rule");
 			else
 				printf(" global");
-			opts = 0;
+			ropts = 0;
 		}
 		if (r->max_src_states) {
-			if (!opts)
+			if (!ropts)
 				printf(", ");
 			printf("max-src-states %u", r->max_src_states);
-			opts = 0;
+			ropts = 0;
 		}
 		if (r->max_src_conn) {
-			if (!opts)
+			if (!ropts)
 				printf(", ");
 			printf("max-src-conn %u", r->max_src_conn);
-			opts = 0;
+			ropts = 0;
 		}
 		if (r->max_src_conn_rate.limit) {
-			if (!opts)
+			if (!ropts)
 				printf(", ");
 			printf("max-src-conn-rate %u/%u",
 			    r->max_src_conn_rate.limit,
 			    r->max_src_conn_rate.seconds);
-			opts = 0;
+			ropts = 0;
 		}
 		if (r->max_src_nodes) {
-			if (!opts)
+			if (!ropts)
 				printf(", ");
 			printf("max-src-nodes %u", r->max_src_nodes);
-			opts = 0;
+			ropts = 0;
 		}
 		if (r->overload_tblname[0]) {
-			if (!opts)
+			if (!ropts)
 				printf(", ");
 			printf("overload <%s>", r->overload_tblname);
 			if (r->flush)
@@ -938,30 +941,30 @@ print_rule(struct pf_rule *r, const char *anchor_call, int verbose)
 				printf(" global");
 		}
 		if (r->rule_flag & PFRULE_IFBOUND) {
-			if (!opts)
+			if (!ropts)
 				printf(", ");
 			printf("if-bound");
-			opts = 0;
+			ropts = 0;
 		}
 		if (r->rule_flag & PFRULE_STATESLOPPY) {
-			if (!opts)
+			if (!ropts)
 				printf(", ");
 			printf("sloppy");
-			opts = 0;
+			ropts = 0;
 		}
 		if (r->rule_flag & PFRULE_PFLOW) {
-			if (!opts)
+			if (!ropts)
 				printf(", ");
 			printf("pflow");
-			opts = 0;
+			ropts = 0;
 		}
 		for (i = 0; i < PFTM_MAX; ++i)
 			if (r->timeout[i]) {
 				int j;
 
-				if (!opts)
+				if (!ropts)
 					printf(", ");
-				opts = 0;
+				ropts = 0;
 				for (j = 0; pf_timeouts[j].name != NULL;
 				    ++j)
 					if (pf_timeouts[j].timeout == i)
@@ -978,40 +981,40 @@ print_rule(struct pf_rule *r, const char *anchor_call, int verbose)
 
 	if (r->scrub_flags >= PFSTATE_NODF || r->min_ttl || r->max_mss) {
 		printf(" scrub (");
-		opts = 1;
+		ropts = 1;
 		if (r->scrub_flags & PFSTATE_NODF) {
 			printf("no-df");
-			opts = 0;
+			ropts = 0;
 		}
 		if (r->scrub_flags & PFSTATE_RANDOMID) {
-			if (!opts)
+			if (!ropts)
 				printf(" ");
 			printf("random-id");
-			opts = 0;
+			ropts = 0;
 		}
 		if (r->min_ttl) {
-			if (!opts)
+			if (!ropts)
 				printf(" ");
 			printf("min-ttl %d", r->min_ttl);
-			opts = 0;
+			ropts = 0;
 		}
 		if (r->scrub_flags & PFSTATE_SETTOS) {
-			if (!opts)
+			if (!ropts)
 				printf(" ");
 			printf("set-tos 0x%2.2x", r->set_tos);
-			opts = 0;
+			ropts = 0;
 		}
 		if (r->scrub_flags & PFSTATE_SCRUB_TCP) {
-			if (!opts)
+			if (!ropts)
 				printf(" ");
 			printf("reassemble tcp");
-			opts = 0;
+			ropts = 0;
 		}
 		if (r->max_mss) {
-			if (!opts)
+			if (!ropts)
 				printf(" ");
 			printf("max-mss %d", r->max_mss);
-			opts = 0;
+			ropts = 0;
 		}
 		printf(")");
 	}
