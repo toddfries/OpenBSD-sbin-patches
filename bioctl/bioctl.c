@@ -1,4 +1,4 @@
-/* $OpenBSD: bioctl.c,v 1.105 2012/01/07 12:16:46 jsing Exp $       */
+/* $OpenBSD: bioctl.c,v 1.109 2012/01/22 11:00:39 jsing Exp $       */
 
 /*
  * Copyright (c) 2004, 2005 Marco Peereboom
@@ -57,7 +57,7 @@ struct locator {
 
 void			usage(void);
 const char 		*str2locator(const char *, struct locator *);
-void			cleanup(void);
+void			bio_status(struct bio_status *);
 int			bio_parse_devlist(char *, dev_t *);
 void			bio_kdf_derive(struct sr_crypto_kdfinfo *,
 			    struct sr_crypto_kdf_pbkdf2 *, char *, int);
@@ -94,13 +94,12 @@ main(int argc, char *argv[])
 {
 	extern char		*optarg;
 	u_int64_t		func = 0;
-	/* u_int64_t subfunc = 0; */
 	char			*devicename = NULL;
 	char			*realname = NULL, *al_arg = NULL;
 	char			*bl_arg = NULL, *dev_list = NULL;
 	char			*key_disk = NULL;
 	const char		*errstr;
-	int			ch, rv, blink = 0, changepass = 0, diskinq = 0;
+	int			ch, blink = 0, changepass = 0, diskinq = 0;
 	int			ss_func = 0;
 	u_int16_t		cr_level = 0;
 	int			biodev = 0;
@@ -218,10 +217,12 @@ main(int argc, char *argv[])
 			err(1, "Can't open %s", "/dev/bio");
 
 		bl.bl_name = devicename;
-		rv = ioctl(devh, BIOCLOCATE, &bl);
-		if (rv == -1)
+		if (ioctl(devh, BIOCLOCATE, &bl))
 			errx(1, "Can't locate %s device via %s",
 			    bl.bl_name, "/dev/bio");
+
+		bio_status(&bl.bl_bio.bio_status);
+
 		biodev = 1;
 		devicename = NULL;
 	}
@@ -307,11 +308,34 @@ str2locator(const char *string, struct locator *location)
 }
 
 void
+bio_status(struct bio_status *bs)
+{
+	extern char		*__progname;
+	char			*prefix;
+	int			i;
+
+	if (strlen(bs->bs_controller))
+		prefix = bs->bs_controller;
+	else
+		prefix = __progname;
+
+	for (i = 0; i < bs->bs_msg_count; i++)
+		printf("%s: %s\n", prefix, bs->bs_msgs[i].bm_msg);
+
+	if (bs->bs_status == BIO_STATUS_ERROR) {
+		if (bs->bs_msg_count == 0)
+			errx(1, "unknown error");
+		else
+			exit(1);
+	}
+}
+
+void
 bio_inq(char *name)
 {
 	char 			*status, size[64], scsiname[16], volname[32];
 	char			percent[10], seconds[20];
-	int			rv, i, d, volheader, hotspare, unused;
+	int			i, d, volheader, hotspare, unused;
 	char			encname[16], serial[32];
 	struct bioc_disk	bd;
 	struct bioc_inq		bi;
@@ -319,10 +343,9 @@ bio_inq(char *name)
 
 	memset(&bi, 0, sizeof(bi));
 
-	bi.bi_cookie = bl.bl_cookie;
+	bi.bi_bio.bio_cookie = bl.bl_bio.bio_cookie;
 
-	rv = ioctl(devh, BIOCINQ, &bi);
-	if (rv == -1) {
+	if (ioctl(devh, BIOCINQ, &bi)) {
 		if (errno == ENOTTY)
 			bio_diskinq(name);
 		else
@@ -330,17 +353,20 @@ bio_inq(char *name)
 		return;
 	}
 
+	bio_status(&bi.bi_bio.bio_status);
+
 	volheader = 0;
 	for (i = 0; i < bi.bi_novol; i++) {
 		memset(&bv, 0, sizeof(bv));
-		bv.bv_cookie = bl.bl_cookie;
+		bv.bv_bio.bio_cookie = bl.bl_bio.bio_cookie;
 		bv.bv_volid = i;
 		bv.bv_percent = -1;
 		bv.bv_seconds = 0;
 
-		rv = ioctl(devh, BIOCVOL, &bv);
-		if (rv == -1)
+		if (ioctl(devh, BIOCVOL, &bv))
 			err(1, "BIOCVOL");
+
+		bio_status(&bv.bv_bio.bio_status);
 
 		if (name && strcmp(name, bv.bv_dev) != 0)
 			continue;
@@ -420,13 +446,14 @@ bio_inq(char *name)
 
 		for (d = 0; d < bv.bv_nodisk; d++) {
 			memset(&bd, 0, sizeof(bd));
-			bd.bd_cookie = bl.bl_cookie;
+			bd.bd_bio.bio_cookie = bl.bl_bio.bio_cookie;
 			bd.bd_diskid = d;
 			bd.bd_volid = i;
 
-			rv = ioctl(devh, BIOCDISK, &bd);
-			if (rv == -1)
+			if (ioctl(devh, BIOCDISK, &bd))
 				err(1, "BIOCDISK");
+		
+			bio_status(&bd.bd_bio.bio_status);
 
 			switch (bd.bd_status) {
 			case BIOC_SDONLINE:
@@ -493,10 +520,9 @@ bio_inq(char *name)
 void
 bio_alarm(char *arg)
 {
-	int			rv;
 	struct bioc_alarm	ba;
 
-	ba.ba_cookie = bl.bl_cookie;
+	ba.ba_bio.bio_cookie = bl.bl_bio.bio_cookie;
 
 	switch (arg[0]) {
 	case 'q': /* silence alarm */
@@ -525,37 +551,38 @@ bio_alarm(char *arg)
 		errx(1, "invalid alarm function: %s", arg);
 	}
 
-	rv = ioctl(devh, BIOCALARM, &ba);
-	if (rv == -1)
+	if (ioctl(devh, BIOCALARM, &ba))
 		err(1, "BIOCALARM");
 
-	if (arg[0] == 'g') {
+	bio_status(&ba.ba_bio.bio_status);
+
+	if (arg[0] == 'g')
 		printf("alarm is currently %s\n",
 		    ba.ba_status ? "enabled" : "disabled");
-
-	}
 }
 
 int
 bio_getvolbyname(char *name)
 {
-	int			id = -1, i, rv;
+	int			id = -1, i;
 	struct bioc_inq		bi;
 	struct bioc_vol		bv;
 
 	memset(&bi, 0, sizeof(bi));
-	bi.bi_cookie = bl.bl_cookie;
-	rv = ioctl(devh, BIOCINQ, &bi);
-	if (rv == -1)
+	bi.bi_bio.bio_cookie = bl.bl_bio.bio_cookie;
+	if (ioctl(devh, BIOCINQ, &bi))
 		err(1, "BIOCINQ");
+
+	bio_status(&bi.bi_bio.bio_status);
 
 	for (i = 0; i < bi.bi_novol; i++) {
 		memset(&bv, 0, sizeof(bv));
-		bv.bv_cookie = bl.bl_cookie;
+		bv.bv_bio.bio_cookie = bl.bl_bio.bio_cookie;
 		bv.bv_volid = i;
-		rv = ioctl(devh, BIOCVOL, &bv);
-		if (rv == -1)
+		if (ioctl(devh, BIOCVOL, &bv))
 			err(1, "BIOCVOL");
+
+		bio_status(&bv.bv_bio.bio_status);
 
 		if (name && strcmp(name, bv.bv_dev) != 0)
 			continue;
@@ -573,7 +600,6 @@ bio_setstate(char *arg, int status, char *devicename)
 	struct locator		location;
 	struct stat		sb;
 	const char		*errstr;
-	int			rv;
 
 	memset(&bs, 0, sizeof(bs));
 	if (stat(arg, &sb) == -1) {
@@ -590,7 +616,7 @@ bio_setstate(char *arg, int status, char *devicename)
 		bs.bs_other_id_type = BIOC_SSOTHER_DEVT;
 	}
 
-	bs.bs_cookie = bl.bl_cookie;
+	bs.bs_bio.bio_cookie = bl.bl_bio.bio_cookie;
 	bs.bs_status = status;
 
 	if (status != BIOC_SSHOTSPARE) {
@@ -600,9 +626,10 @@ bio_setstate(char *arg, int status, char *devicename)
 			errx(1, "invalid device %s", devicename);
 	}
 
-	rv = ioctl(devh, BIOCSETSTATE, &bs);
-	if (rv == -1)
+	if (ioctl(devh, BIOCSETSTATE, &bs))
 		err(1, "BIOCSETSTATE");
+
+	bio_status(&bs.bs_bio.bio_status);
 }
 
 void
@@ -622,57 +649,68 @@ bio_setblink(char *name, char *arg, int blink)
 
 	/* try setting blink on the device directly */
 	memset(&bb, 0, sizeof(bb));
-	bb.bb_cookie = bl.bl_cookie;
+	bb.bb_bio.bio_cookie = bl.bl_bio.bio_cookie;
 	bb.bb_status = blink;
 	bb.bb_target = location.target;
 	bb.bb_channel = location.channel;
 	rv = ioctl(devh, BIOCBLINK, &bb);
-	if (rv == 0)
+
+	if (rv == 0 && bb.bb_bio.bio_status.bs_status == BIO_STATUS_UNKNOWN)
 		return;
+
+	if (rv == 0 && bb.bb_bio.bio_status.bs_status == BIO_STATUS_SUCCESS) {
+		bio_status(&bb.bb_bio.bio_status);
+		return;
+	}
 
 	/* if the blink didn't work, try to find something that will */
 
 	memset(&bi, 0, sizeof(bi));
-	bi.bi_cookie = bl.bl_cookie;
-	rv = ioctl(devh, BIOCINQ, &bi);
-	if (rv == -1)
+	bi.bi_bio.bio_cookie = bl.bl_bio.bio_cookie;
+	if (ioctl(devh, BIOCINQ, &bi))
 		err(1, "BIOCINQ");
+
+	bio_status(&bi.bi_bio.bio_status);
 
 	for (v = 0; v < bi.bi_novol; v++) {
 		memset(&bv, 0, sizeof(bv));
-		bv.bv_cookie = bl.bl_cookie;
+		bv.bv_bio.bio_cookie = bl.bl_bio.bio_cookie;
 		bv.bv_volid = v;
-		rv = ioctl(devh, BIOCVOL, &bv);
-		if (rv == -1)
+		if (ioctl(devh, BIOCVOL, &bv))
 			err(1, "BIOCVOL");
+
+		bio_status(&bv.bv_bio.bio_status);
 
 		if (name && strcmp(name, bv.bv_dev) != 0)
 			continue;
 
 		for (d = 0; d < bv.bv_nodisk; d++) {
 			memset(&bd, 0, sizeof(bd));
-			bd.bd_cookie = bl.bl_cookie;
+			bd.bd_bio.bio_cookie = bl.bl_bio.bio_cookie;
 			bd.bd_volid = v;
 			bd.bd_diskid = d;
 
-			rv = ioctl(devh, BIOCDISK, &bd);
-			if (rv == -1)
+			if (ioctl(devh, BIOCDISK, &bd))
 				err(1, "BIOCDISK");
+
+			bio_status(&bd.bd_bio.bio_status);
 
 			if (bd.bd_channel == location.channel &&
 			    bd.bd_target == location.target &&
 			    bd.bd_lun == location.lun) {
-				if (bd.bd_procdev[0] != '\0') {
+				if (bd.bd_procdev[0] != '\0')
 					bio_blink(bd.bd_procdev,
 					    location.target, blink);
-				} else
-					warnx("Disk %s is not in an enclosure", arg);
+				else
+					warnx("Disk %s is not in an enclosure",
+					    arg);
 				return;
 			}
 		}
 	}
 
 	warnx("Disk %s does not exist", arg);
+
 	return;
 }
 
@@ -680,27 +718,28 @@ void
 bio_blink(char *enclosure, int target, int blinktype)
 {
 	int			bioh;
-	struct bio_locate	bio;
+	struct bio_locate	bl;
 	struct bioc_blink	blink;
-	int			rv;
 
 	bioh = open("/dev/bio", O_RDWR);
 	if (bioh == -1)
 		err(1, "Can't open %s", "/dev/bio");
 
-	bio.bl_name = enclosure;
-	rv = ioctl(bioh, BIOCLOCATE, &bio);
-	if (rv == -1)
+	bl.bl_name = enclosure;
+	if (ioctl(bioh, BIOCLOCATE, &bl))
 		errx(1, "Can't locate %s device via %s", enclosure, "/dev/bio");
+ 
+	bio_status(&bl.bl_bio.bio_status);
 
 	memset(&blink, 0, sizeof(blink));
-	blink.bb_cookie = bio.bl_cookie;
+	blink.bb_bio.bio_cookie = bl.bl_bio.bio_cookie;
 	blink.bb_status = blinktype;
 	blink.bb_target = target;
 
-	rv = ioctl(bioh, BIOCBLINK, &blink);
-	if (rv == -1)
+	if (ioctl(bioh, BIOCBLINK, &blink))
 		err(1, "BIOCBLINK");
+
+	bio_status(&blink.bb_bio.bio_status);
 
 	close(bioh);
 }
@@ -792,7 +831,7 @@ bio_createraid(u_int16_t level, char *dev_list, char *key_disk)
 		min_disks = 1;
 		break;
 	case 'c':
-		min_disks = 1;
+		min_disks = 2;
 		break;
 	case 'a':
 		break;
@@ -808,7 +847,7 @@ bio_createraid(u_int16_t level, char *dev_list, char *key_disk)
 		errx(1, "not exactly one partition");
 
 	memset(&create, 0, sizeof(create));
-	create.bc_cookie = bl.bl_cookie;
+	create.bc_bio.bio_cookie = bl.bl_bio.bio_cookie;
 	create.bc_level = level;
 	create.bc_dev_list_len = no_dev * sizeof(dev_t);
 	create.bc_dev_list = dt;
@@ -831,13 +870,15 @@ bio_createraid(u_int16_t level, char *dev_list, char *key_disk)
 		create.bc_opaque_flags = BIOC_SOOUT;
 
 		/* try to get KDF hint */
-		if (ioctl(devh, BIOCCREATERAID, &create) == -1)
+		if (ioctl(devh, BIOCCREATERAID, &create))
 			err(1, "ioctl");
+
+		bio_status(&create.bc_bio.bio_status);
 
 		if (create.bc_opaque_status == BIOC_SOINOUT_OK) {
 			bio_kdf_derive(&kdfinfo, &kdfhint, "Passphrase: ", 0);
 			memset(&kdfhint, 0, sizeof(kdfhint));
-		} else  {
+		} else {
 			bio_kdf_generate(&kdfinfo);
 		}
 
@@ -873,12 +914,10 @@ bio_createraid(u_int16_t level, char *dev_list, char *key_disk)
 
 	rv = ioctl(devh, BIOCCREATERAID, &create);
 	memset(&kdfinfo, 0, sizeof(kdfinfo));
-	memset(&create, 0, sizeof(create));
-	if (rv == -1) {
-		if (errno == EPERM)
-			errx(1, "Incorrect passphrase");
+	if (rv == -1)
 		err(1, "BIOCCREATERAID");
-	}
+
+	bio_status(&create.bc_bio.bio_status);
 
 	free(dt);
 }
@@ -1016,11 +1055,13 @@ bio_deleteraid(char *dev)
 	struct bioc_deleteraid	bd;
 	memset(&bd, 0, sizeof(bd));
 
-	bd.bd_cookie = bd.bd_cookie;
+	bd.bd_bio.bio_cookie = bd.bd_bio.bio_cookie;
 	/* XXX make this a dev_t instead of a string */
 	strlcpy(bd.bd_dev, dev, sizeof bd.bd_dev);
 	if (ioctl(devh, BIOCDELETERAID, &bd))
-		errx(1, "delete volume %s failed", dev);
+		err(1, "BIOCDELETERAID");
+
+	bio_status(&bd.bd_bio.bio_status);
 }
 
 void
@@ -1044,7 +1085,9 @@ bio_changepass(char *dev)
 	bd.bd_data = &kdfhint;
 
 	if (ioctl(devh, BIOCDISCIPLINE, &bd))
-		errx(1, "%s: failed to get KDF hint", dev);
+		err(1, "BIOCDISCIPLINE");
+
+	bio_status(&bd.bd_bio.bio_status);
 
 	/* Current passphrase. */
 	bio_kdf_derive(&kdfinfo1, &kdfhint, "Old passphrase: ", 0);
@@ -1067,12 +1110,10 @@ bio_changepass(char *dev)
 	memset(&kdfinfo1, 0, sizeof(kdfinfo1));
 	memset(&kdfinfo2, 0, sizeof(kdfinfo2));
 
-	if (rv) {
-		if (errno == EPERM)
-			errx(1, "%s: incorrect passphrase", dev);
-		else
-			errx(1, "%s: failed to change passphrase", dev);
-	}
+	if (rv)
+		err(1, "BIOCDISCIPLINE");
+
+	bio_status(&bd.bd_bio.bio_status);
 }
 
 #define BIOCTL_VIS_NBUF		4

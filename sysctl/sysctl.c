@@ -1,4 +1,4 @@
-/*	$OpenBSD: sysctl.c,v 1.180 2011/09/16 20:52:48 yuo Exp $	*/
+/*	$OpenBSD: sysctl.c,v 1.182 2012/01/19 09:44:16 chl Exp $	*/
 /*	$NetBSD: sysctl.c,v 1.9 1995/09/30 07:12:50 thorpej Exp $	*/
 
 /*
@@ -192,6 +192,7 @@ int sysctl_inet6(char *, char **, int *, int, int *);
 #endif
 int sysctl_bpf(char *, char **, int *, int, int *);
 int sysctl_mpls(char *, char **, int *, int, int *);
+int sysctl_pipex(char *, char **, int *, int, int *);
 int sysctl_fs(char *, char **, int *, int, int *);
 static int sysctl_vfs(char *, char **, int[], int, int *);
 static int sysctl_vfsgen(char *, char **, int[], int, int *);
@@ -2184,7 +2185,6 @@ sysctl_mpls(char *string, char **bufpp, int mib[], int flags, int *typep)
 int
 sysctl_pipex(char *string, char **bufpp, int mib[], int flags, int *typep)
 {
-	struct list *lp;
 	int indx;
 
 	if (*bufpp == NULL) {
