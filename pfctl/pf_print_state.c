@@ -1,4 +1,4 @@
-/*	$OpenBSD: pf_print_state.c,v 1.59 2011/10/13 18:30:54 claudio Exp $	*/
+/*	$OpenBSD: pf_print_state.c,v 1.61 2012/06/01 08:35:45 jsg Exp $	*/
 
 /*
  * Copyright (c) 2001 Daniel Hartmeier

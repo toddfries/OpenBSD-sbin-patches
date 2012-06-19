@@ -1,4 +1,4 @@
-/*	$OpenBSD: iked.h,v 1.42 2012/04/05 17:31:36 deraadt Exp $	*/
+/*	$OpenBSD: iked.h,v 1.47 2012/05/30 16:17:20 mikeb Exp $	*/
 /*	$vantronix: iked.h,v 1.61 2010/06/03 07:57:33 reyk Exp $	*/
 
 /*
@@ -96,6 +96,13 @@ enum privsep_procid privsep_process;
 /*
  * Runtime structures
  */
+
+struct iked_timer {
+	struct event	 tmr_ev;
+	struct iked	*tmr_env;
+	void		(*tmr_cb)(struct iked *, void *);
+	void		*tmr_cbarg;
+};
 
 struct iked_spi {
 	u_int64_t	 spi;
@@ -500,6 +507,10 @@ struct iked {
 	struct iked_socket		*sc_sock4;
 	struct iked_socket		*sc_sock6;
 
+	struct iked_timer		 sc_inittmr;
+#define IKED_INITIATOR_INITIAL		 2
+#define IKED_INITIATOR_INTERVAL		 60
+
 	struct privsep			 sc_ps;
 };
 
@@ -644,9 +655,9 @@ pid_t	 ikev1(struct privsep *, struct privsep_proc *);
 /* ikev2.c */
 pid_t	 ikev2(struct privsep *, struct privsep_proc *);
 void	 ikev2_recv(struct iked *, struct iked_message *);
-int	 ikev2_init_ike_sa(struct iked *, struct iked_policy *);
+void	 ikev2_init_ike_sa(struct iked *, void *);
 int	 ikev2_sa_negotiate(struct iked_sa *, struct iked_proposals *,
-	    struct iked_proposals *, u_int8_t);
+	    struct iked_proposals *);
 int	 ikev2_policy2id(struct iked_static_id *, struct iked_id *, int);
 int	 ikev2_childsa_enable(struct iked *, struct iked_sa *);
 int	 ikev2_childsa_delete(struct iked *, struct iked_sa *,
@@ -691,7 +702,7 @@ int	 ikev2_msg_authverify(struct iked *, struct iked_sa *,
 	    struct iked_auth *, u_int8_t *, size_t, struct ibuf *);
 int	 ikev2_msg_valid_ike_sa(struct iked *, struct ike_header *,
 	    struct iked_message *);
-int	 ikev2_msg_send(struct iked *, int, struct iked_message *);
+int	 ikev2_msg_send(struct iked *, struct iked_message *);
 int	 ikev2_msg_send_encrypt(struct iked *, struct iked_sa *,
 	    struct ibuf **, u_int8_t, u_int8_t, int);
 struct ibuf
@@ -737,9 +748,9 @@ char	*ca_asn1_name(u_int8_t *, size_t);
 char	*ca_x509_name(void *);
 
 /* timer.c */
-void	 timer_register_initiator(struct iked *,
-	    int (*)(struct iked *, struct iked_policy *));
-void	 timer_unregister_initiator(struct iked *);
+void	 timer_register(struct iked *, struct iked_timer *,
+	    void (*)(struct iked *, void *), void *, int);
+void	 timer_deregister(struct iked *, struct iked_timer *);
 
 /* proc.c */
 void	 proc_init(struct privsep *, struct privsep_proc *, u_int);
@@ -767,6 +778,7 @@ void	 socket_set_blockmode(int, enum blockmodes);
 int	 socket_af(struct sockaddr *, in_port_t);
 in_port_t
 	 socket_getport(struct sockaddr_storage *);
+int	 socket_getaddr(int, struct sockaddr_storage *);
 int	 socket_bypass(int, struct sockaddr *);
 int	 udp_bind(struct sockaddr *, in_port_t);
 ssize_t	 recvfromto(int, void *, size_t, int, struct sockaddr *,
