@@ -1,4 +1,4 @@
-/*	$OpenBSD: dhclient.c,v 1.142 2011/12/10 15:55:43 krw Exp $	*/
+/*	$OpenBSD: dhclient.c,v 1.144 2012/06/22 00:08:43 krw Exp $	*/
 
 /*
  * Copyright 2004 Henning Brauer <henning@openbsd.org>
@@ -244,7 +244,7 @@ routehandler(void)
 #endif
 			ifi->linkstat = interface_link_status(ifi->name);
 			if (ifi->linkstat) {
-				client->state = S_INIT;
+				client->state = S_REBOOTING;
 				state_reboot();
 			}
 		}
@@ -415,7 +415,7 @@ main(int argc, char *argv[])
 	setproctitle("%s", ifi->name);
 
 	if (ifi->linkstat) {
-		client->state = S_INIT;
+		client->state = S_REBOOTING;
 		state_reboot();
 	} else
 		go_daemon();
@@ -468,14 +468,20 @@ usage(void)
 void
 state_reboot(void)
 {
+	/* Cancel all timeouts, since a link state change gets us here
+	   and can happen anytime. */
+	cancel_timeout(state_init);
+	cancel_timeout(state_selecting);
+	cancel_timeout(state_bound);
+	cancel_timeout(send_discover);
+	cancel_timeout(send_request);
+
 	/* If we don't remember an active lease, go straight to INIT. */
 	if (!client->active || client->active->is_bootp) {
+		client->state = S_INIT;
 		state_init();
 		return;
 	}
-
-	/* We are in the rebooting state. */
-	client->state = S_REBOOTING;
 
 	/* make_request doesn't initialize xid because it normally comes
 	   from the DHCPDISCOVER, but we haven't sent a DHCPDISCOVER,
