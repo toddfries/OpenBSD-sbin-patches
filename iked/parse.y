@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.24 2012/05/08 08:53:14 mikeb Exp $	*/
+/*	$OpenBSD: parse.y,v 1.26 2012/06/30 14:51:31 naddy Exp $	*/
 /*	$vantronix: parse.y,v 1.22 2010/06/03 11:08:34 reyk Exp $	*/
 
 /*
@@ -108,6 +108,7 @@ struct ipsec_transforms {
 	const struct ipsec_xf *prfxf;
 	const struct ipsec_xf *encxf;
 	const struct ipsec_xf *groupxf;
+	const struct ipsec_xf *esnxf;
 };
 
 struct ipsec_mode {
@@ -151,7 +152,9 @@ const struct ipsec_xf ipsecencxfs[] = {
 	{ "aes-128",		IKEV2_XFORMENCR_AES_CBC,	16, 16 },
 	{ "aes-192",		IKEV2_XFORMENCR_AES_CBC,	24, 24 },
 	{ "aes-256",		IKEV2_XFORMENCR_AES_CBC,	32, 32 },
-	{ "aes-ctr",		IKEV2_XFORMENCR_AES_CTR,	16, 16, 4 },
+	{ "aes-128-ctr",	IKEV2_XFORMENCR_AES_CTR,	16, 16, 4 },
+	{ "aes-192-ctr",	IKEV2_XFORMENCR_AES_CTR,	24, 24, 4 },
+	{ "aes-256-ctr",	IKEV2_XFORMENCR_AES_CTR,	32, 32, 4 },
 	{ "aes-128-gcm",	IKEV2_XFORMENCR_AES_GCM_16,	16, 16, 4, 1 },
 	{ "aes-192-gcm",	IKEV2_XFORMENCR_AES_GCM_16,	24, 24, 4, 1 },
 	{ "aes-256-gcm",	IKEV2_XFORMENCR_AES_GCM_16,	32, 32, 4, 1 },

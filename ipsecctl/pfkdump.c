@@ -1,4 +1,4 @@
-/*	$OpenBSD: pfkdump.c,v 1.30 2011/04/13 11:31:27 markus Exp $	*/
+/*	$OpenBSD: pfkdump.c,v 1.32 2012/06/30 14:51:31 naddy Exp $	*/
 
 /*
  * Copyright (c) 2003 Markus Friedl.  All rights reserved.
@@ -637,6 +637,7 @@ pfkey_print_sa(struct sadb_msg *msg, int opts)
 	r.tmode = (msg->sadb_msg_satype != SADB_X_SATYPE_TCPSIGNATURE) &&
 	    (sa->sadb_sa_flags & SADB_X_SAFLAGS_TUNNEL) ?
 	    IPSEC_TUNNEL : IPSEC_TRANSPORT;
+	r.esn = sa->sadb_sa_flags & SADB_X_SAFLAGS_ESN ? 1 : 0;
 	r.spi = ntohl(sa->sadb_sa_spi);
 
 	switch (msg->sadb_msg_satype) {
@@ -710,7 +711,17 @@ pfkey_print_sa(struct sadb_msg *msg, int opts)
 				}
 				break;
 			case SADB_X_EALG_AESCTR:
-				xfs.encxf = &encxfs[ENCXF_AESCTR];
+				switch (r.enckey->len) {
+				case 28:
+					xfs.encxf = &encxfs[ENCXF_AES_192_CTR];
+					break;
+				case 36:
+					xfs.encxf = &encxfs[ENCXF_AES_256_CTR];
+					break;
+				default:
+					xfs.encxf = &encxfs[ENCXF_AESCTR];
+					break;
+				}
 				break;
 			case SADB_X_EALG_AESGCM16:
 				switch (r.enckey->len) {

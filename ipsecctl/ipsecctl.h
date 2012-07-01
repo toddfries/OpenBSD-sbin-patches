@@ -1,4 +1,4 @@
-/*	$OpenBSD: ipsecctl.h,v 1.62 2011/11/08 13:26:06 henning Exp $	*/
+/*	$OpenBSD: ipsecctl.h,v 1.64 2012/06/30 14:51:31 naddy Exp $	*/
 /*
  * Copyright (c) 2004, 2005 Hans-Joerg Hoexer <hshoexer@openbsd.org>
  *
@@ -64,6 +64,7 @@ enum {
 enum {
 	ENCXF_UNKNOWN, ENCXF_NONE, ENCXF_3DES_CBC, ENCXF_DES_CBC, ENCXF_AES,
 	ENCXF_AES_128, ENCXF_AES_192, ENCXF_AES_256, ENCXF_AESCTR,
+	ENCXF_AES_128_CTR, ENCXF_AES_192_CTR, ENCXF_AES_256_CTR,
 	ENCXF_AES_128_GCM, ENCXF_AES_192_GCM, ENCXF_AES_256_GCM,
 	ENCXF_AES_128_GMAC, ENCXF_AES_192_GMAC, ENCXF_AES_256_GMAC,
 	ENCXF_BLOWFISH, ENCXF_CAST128, ENCXF_NULL
@@ -203,6 +204,7 @@ struct ipsec_rule {
 	u_int8_t	 ikemode;
 	u_int8_t	 p1ie;
 	u_int8_t	 p2ie;
+	u_int8_t	 esn;
 	u_int16_t	 sport;
 	u_int16_t	 dport;
 	u_int32_t	 spi;

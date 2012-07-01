@@ -1,4 +1,4 @@
-/*	$OpenBSD: options.c,v 1.39 2011/05/11 14:38:36 krw Exp $	*/
+/*	$OpenBSD: options.c,v 1.41 2012/06/26 14:46:42 krw Exp $	*/
 
 /* DHCP options parsing and reassembly. */
 
@@ -68,24 +68,39 @@ parse_option_buffer(struct option_data *options, unsigned char *buffer,
 		}
 
 		/*
-		 * All options other than DHO_PAD and DHO_END have a
-		 * one-byte length field.
+		 * All options other than DHO_PAD and DHO_END have a one-byte
+		 * length field. It could be 0! Make sure that the length byte
+		 * is present, and all the data is available.
 		 */
-		if (s + 2 > end)
-			len = 0;
-		else
+		if (s + 1 < end) {
 			len = s[1];
-
-		/*
-		 * If the option claims to extend beyond the end of the buffer
-		 * then mark the options buffer bad.
-		 */
-		if (s + len + 2 > end) {
-			warning("option %s (%d) larger than buffer.",
-			    dhcp_options[code].name, len);
+			if (s + 1 + len < end) {
+				; /* option data is all there. */
+			} else {
+				warning("option %s (%d) larger than buffer.",
+				    dhcp_options[code].name, len);
+				warning("rejecting bogus offer.");
+				return (0);
+			}
+		} else {
+			warning("option %s has no length field.",
+			    dhcp_options[code].name);
 			warning("rejecting bogus offer.");
 			return (0);
 		}
+
+		/*
+		 * Strip trailing NULs from ascii ('t') options. They
+		 * will be treated as DHO_PAD options. i.e. ignored. RFC 2132
+		 * says "Options containing NVT ASCII data SHOULD NOT include
+		 * a trailing NULL; however, the receiver of such options
+		 * MUST be prepared to delete trailing nulls if they exist."
+		 */
+		if (dhcp_options[code].format[0] == 't') {
+			while (len > 0 && s[len + 1] == '\0')
+				len--;
+		}
+
 		/*
 		 * If we haven't seen this option before, just make
 		 * space for it and copy it there.

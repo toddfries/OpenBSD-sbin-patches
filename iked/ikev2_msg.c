@@ -1,4 +1,4 @@
-/*	$OpenBSD: ikev2_msg.c,v 1.16 2012/06/22 16:28:20 mikeb Exp $	*/
+/*	$OpenBSD: ikev2_msg.c,v 1.20 2012/06/27 15:36:36 mikeb Exp $	*/
 /*	$vantronix: ikev2.c,v 1.101 2010/06/03 07:57:33 reyk Exp $	*/
 
 /*
@@ -49,9 +49,6 @@
 
 void	 ikev2_msg_response_timeout(struct iked *, void *);
 void	 ikev2_msg_retransmit_timeout(struct iked *, void *);
-struct iked_message *
-	 ikev2_msg_lookup_by_id(struct iked *, struct iked_msgqueue *,
-	    u_int32_t);
 
 void
 ikev2_msg_cb(int fd, short event, void *arg)
@@ -290,6 +287,7 @@ ikev2_msg_send(struct iked *env, struct iked_message *msg)
 		log_debug("%s: failed to copy a message", __func__);
 		return (-1);
 	}
+	m->msg_exchange = hdr->ike_exchange;
 
 	if (hdr->ike_flags & IKEV2_FLAG_RESPONSE) {
 		TAILQ_INSERT_TAIL(&sa->sa_responses, m, msg_entry);
@@ -893,9 +891,9 @@ void
 ikev2_msg_prevail(struct iked *env, struct iked_msgqueue *queue,
     struct iked_message *msg)
 {
-	struct iked_message	*m = NULL;
+	struct iked_message	*m, *mtmp;
 
-	while ((m = TAILQ_FIRST(queue)) != NULL) {
+	TAILQ_FOREACH_SAFE(m, queue, msg_entry, mtmp) {
 		if (m->msg_msgid < msg->msg_msgid)
 			ikev2_msg_dispose(env, queue, m);
 	}
@@ -921,23 +919,18 @@ ikev2_msg_flushqueue(struct iked *env, struct iked_msgqueue *queue)
 }
 
 struct iked_message *
-ikev2_msg_lookup_by_id(struct iked *env, struct iked_msgqueue *queue,
-    u_int32_t msgid)
+ikev2_msg_lookup(struct iked *env, struct iked_msgqueue *queue,
+    struct iked_message *msg, struct ike_header *hdr)
 {
 	struct iked_message	*m = NULL;
 
 	TAILQ_FOREACH(m, queue, msg_entry) {
-		if (m->msg_msgid == msgid)
+		if (m->msg_msgid == msg->msg_msgid &&
+		    m->msg_exchange == hdr->ike_exchange)
 			break;
 	}
-	return (m);
-}
 
-struct iked_message *
-ikev2_msg_lookup(struct iked *env, struct iked_msgqueue *queue,
-    struct iked_message *msg)
-{
-	return (ikev2_msg_lookup_by_id(env, queue, msg->msg_msgid));
+	return (m);
 }
 
 int
@@ -971,19 +964,20 @@ ikev2_msg_retransmit_timeout(struct iked *env, void *arg)
 	struct iked_message	*msg = arg;
 	struct iked_sa		*sa = msg->msg_sa;
 
-	if ((sendto(msg->msg_fd, ibuf_data(msg->msg_data),
-	    ibuf_size(msg->msg_data), 0,
-	    (struct sockaddr *)&msg->msg_peer, msg->msg_peerlen)) == -1) {
-		log_warn("%s: sendto", __func__);
-		sa_free(env, sa);
-		return;
-	}
-
 	if (msg->msg_tries < IKED_RETRANSMIT_TRIES) {
-		TAILQ_INSERT_TAIL(&sa->sa_requests, msg, msg_entry);
+		if ((sendto(msg->msg_fd, ibuf_data(msg->msg_data),
+		    ibuf_size(msg->msg_data), 0,
+		    (struct sockaddr *)&msg->msg_peer,
+		    msg->msg_peerlen)) == -1) {
+			log_warn("%s: sendto", __func__);
+			sa_free(env, sa);
+			return;
+		}
 		/* Exponential timeout */
 		timer_register(env, &msg->msg_timer,
 		    IKED_RETRANSMIT_TIMEOUT * (2 << (msg->msg_tries++)));
-	} else
+	} else {
+		log_debug("%s: retransmit limit reached", __func__);
 		sa_free(env, sa);
+	}
 }
