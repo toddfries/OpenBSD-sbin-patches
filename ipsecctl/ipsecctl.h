@@ -1,4 +1,4 @@
-/*	$OpenBSD: ipsecctl.h,v 1.64 2012/06/30 14:51:31 naddy Exp $	*/
+/*	$OpenBSD: ipsecctl.h,v 1.66 2012/07/08 17:51:51 naddy Exp $	*/
 /*
  * Copyright (c) 2004, 2005 Hans-Joerg Hoexer <hshoexer@openbsd.org>
  *
@@ -143,7 +143,8 @@ struct ipsec_xf {
 	u_int16_t	 id;
 	size_t		 keymin;
 	size_t		 keymax;
-	int		 noauth;
+	u_int8_t	 noauth;
+	u_int8_t	 nostatic;
 };
 
 struct ipsec_transforms {
@@ -204,7 +205,6 @@ struct ipsec_rule {
 	u_int8_t	 ikemode;
 	u_int8_t	 p1ie;
 	u_int8_t	 p2ie;
-	u_int8_t	 esn;
 	u_int16_t	 sport;
 	u_int16_t	 dport;
 	u_int32_t	 spi;

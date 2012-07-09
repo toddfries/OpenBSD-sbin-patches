@@ -1,4 +1,4 @@
-/*	$OpenBSD: mount_ext2fs.c,v 1.14 2009/10/27 23:59:33 deraadt Exp $	*/
+/*	$OpenBSD: mount_ext2fs.c,v 1.16 2012/07/09 12:58:01 krw Exp $	*/
 /*	$NetBSD: mount_ffs.c,v 1.3 1996/04/13 01:31:19 jtc Exp $	*/
 
 /*-

@@ -1,4 +1,4 @@
-/*	$OpenBSD: mount_msdos.c,v 1.24 2011/04/04 13:49:48 tedu Exp $	*/
+/*	$OpenBSD: mount_msdos.c,v 1.26 2012/07/09 12:58:01 krw Exp $	*/
 /*	$NetBSD: mount_msdos.c,v 1.16 1996/10/24 00:12:50 cgd Exp $	*/
 
 /*
