@@ -1,4 +1,4 @@
-/*	$OpenBSD: pfctl_parser.c,v 1.286 2012/07/09 14:05:35 henning Exp $ */
+/*	$OpenBSD: pfctl_parser.c,v 1.289 2012/07/10 09:39:26 henning Exp $ */
 
 /*
  * Copyright (c) 2001 Daniel Hartmeier
@@ -846,7 +846,7 @@ print_rule(struct pf_rule *r, const char *anchor_call, int opts)
 	if (r->set_prio[0] != PF_PRIO_NOTSET ||
 	    r->scrub_flags & PFSTATE_SETTOS) {
 		char *comma = "";
-		printf(" set {");
+		printf(" set (");
 		if (r->set_prio[0] != PF_PRIO_NOTSET) {
 			if (r->set_prio[0] == r->set_prio[1])
 				printf("%s prio %u", comma, r->set_prio[0]);
@@ -859,7 +859,7 @@ print_rule(struct pf_rule *r, const char *anchor_call, int opts)
 			printf("%s tos 0x%2.2x", comma, r->set_tos);
 			comma = ",";
 		}
-		printf(" }");
+		printf(" )");
 	}
 
 	ropts = 0;
@@ -998,7 +998,7 @@ print_rule(struct pf_rule *r, const char *anchor_call, int opts)
 	if (r->rule_flag & PFRULE_FRAGMENT)
 		printf(" fragment");
 
-	if (r->scrub_flags >= PFSTATE_NODF || r->min_ttl || r->max_mss) {
+	if (r->scrub_flags & PFSTATE_SCRUBMASK || r->min_ttl || r->max_mss) {
 		printf(" scrub (");
 		ropts = 1;
 		if (r->scrub_flags & PFSTATE_NODF) {
