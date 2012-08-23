@@ -1,4 +1,4 @@
-/*	$OpenBSD: dhclient.c,v 1.146 2012/07/09 16:21:21 krw Exp $	*/
+/*	$OpenBSD: dhclient.c,v 1.151 2012/08/22 00:14:42 tedu Exp $	*/
 
 /*
  * Copyright 2004 Henning Brauer <henning@openbsd.org>
@@ -163,7 +163,6 @@ routehandler(void)
 	struct ifa_msghdr *ifam;
 	struct if_announcemsghdr *ifan;
 	struct client_lease *l;
-	time_t t = time(NULL);
 	struct sockaddr *sa;
 	struct iaddr a;
 	ssize_t n;
@@ -221,7 +220,7 @@ routehandler(void)
 		    ifam->ifam_addrs) != AF_INET)
 			break;
 		/* XXX check addrs like RTM_NEWADDR instead of this? */
-		if (scripttime == 0 || t < scripttime + 10)
+		if (scripttime == 0 || cur_time < scripttime + 10)
 			break;
 		errmsg = "interface address deleted";
 		goto die;
@@ -679,9 +678,9 @@ bind_lease(void)
 	/* Set timeout to start the renewal process. */
 	set_timeout(client->active->renewal, state_bound);
 
-	note("bound to %s -- renewal in %d seconds.",
+	note("bound to %s -- renewal in %lld seconds.",
 	    piaddr(client->active->address),
-	    client->active->renewal - cur_time);
+	    (long long)(client->active->renewal - cur_time));
 	client->state = S_BOUND;
 	reinitialize_interface();
 	go_daemon();
@@ -721,7 +720,7 @@ dhcpoffer(struct iaddr client_addr, struct option_data *options)
 {
 	struct client_lease *lease, *lp;
 	int i;
-	int stop_selecting;
+	time_t stop_selecting;
 	char *name = options[DHO_DHCP_MESSAGE_TYPE].len ? "DHCPOFFER" :
 	    "BOOTREPLY";
 
@@ -993,9 +992,9 @@ state_panic(void)
 				if (cur_time <
 				    client->active->renewal) {
 					client->state = S_BOUND;
-					note("bound: renewal in %d seconds.",
-					    client->active->renewal -
-					    cur_time);
+					note("bound: renewal in %lld seconds.",
+					    (long long)(client->active->renewal
+					    - cur_time));
 					set_timeout(client->active->renewal,
 					    state_bound);
 				} else {
@@ -1535,6 +1534,9 @@ priv_script_write_params(char *prefix, struct client_lease *lease)
 		if (config->defaults[i].len) {
 			if (lease->options[i].len) {
 				switch (config->default_actions[i]) {
+				case ACTION_IGNORE:
+					/* handled below */
+					break;
 				case ACTION_DEFAULT:
 					dp = lease->options[i].data;
 					len = lease->options[i].len;
@@ -1588,6 +1590,9 @@ supersede:
 			len = lease->options[i].len;
 			dp = lease->options[i].data;
 		} else {
+			len = 0;
+		}
+		if (len && config->default_actions[i] == ACTION_IGNORE) {
 			len = 0;
 		}
 		if (len) {
