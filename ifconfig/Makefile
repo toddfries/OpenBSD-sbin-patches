@@ -1,11 +1,12 @@
-#	$OpenBSD: Makefile,v 1.11 2010/10/18 04:10:56 deraadt Exp $
-
-.PATH:	${.CURDIR}/../bioctl
+#	$OpenBSD: Makefile,v 1.13 2012/09/07 00:33:24 deraadt Exp $
 
 PROG=	ifconfig
-SRCS=	ifconfig.c brconfig.c pbkdf2.c
+SRCS=	ifconfig.c brconfig.c
 MAN=	ifconfig.8
 
-CPPFLAGS+=-DINET6 -I${.CURDIR}/../bioctl
+LDADD=	-lutil
+DPADD=	${LIBUTIL}
+
+CPPFLAGS+=-DINET6
 
 .include <bsd.prog.mk>

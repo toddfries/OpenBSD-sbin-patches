@@ -1,4 +1,4 @@
-/*	$OpenBSD: dhclient.c,v 1.154 2012/09/01 19:02:27 krw Exp $	*/
+/*	$OpenBSD: dhclient.c,v 1.156 2012/09/18 09:34:09 krw Exp $	*/
 
 /*
  * Copyright 2004 Henning Brauer <henning@openbsd.org>
@@ -243,6 +243,10 @@ routehandler(void)
 			if (ifi->linkstat) {
 				client->state = S_REBOOTING;
 				state_reboot();
+			} else if (client->active) {
+				script_init("FAIL");
+				script_write_params("old_", client->active);
+				script_go();
 			}
 		}
 		break;
@@ -261,7 +265,9 @@ routehandler(void)
 
 die:
 	script_init("FAIL");
+	script_write_params("old_", client->active);
 	script_go();
+	sleep(2);
 	error("routehandler: %s", errmsg);
 }
 
@@ -751,6 +757,13 @@ dhcpoffer(struct iaddr client_addr, struct option_data *options)
 		note("packet_to_lease failed.");
 		return;
 	}
+
+	/*
+	 * Reject offers whose subnet is already configured on another
+	 * interface.
+	 */
+	if (subnet_exists(lease))
+		return;
 
 	/* If this lease was acquired through a BOOTREPLY, record that
 	   fact. */
