@@ -1,4 +1,4 @@
-# $OpenBSD: Makefile,v 1.12 2005/07/17 19:33:55 krw Exp $
+# $OpenBSD: Makefile,v 1.14 2012/11/08 21:32:55 krw Exp $
 #
 # Copyright (c) 1996, 1997 The Internet Software Consortium.
 # All rights reserved.
@@ -33,16 +33,12 @@
 .include <bsd.own.mk>
 
 SRCS=	dhclient.c clparse.c dispatch.c bpf.c options.c \
-	conflex.c errwarn.c inet.c packet.c convert.c tables.c \
-	parse.c privsep.c
+	conflex.c errwarn.c packet.c convert.c tables.c \
+	parse.c privsep.c kroute.c
 
 PROG=	dhclient
-MAN=	dhclient.8 dhclient.conf.5 dhclient.leases.5 dhclient-script.8
+MAN=	dhclient.8 dhclient.conf.5 dhclient.leases.5
 
 CFLAGS+=-Wall
-
-beforeinstall:
-	${INSTALL} ${INSTALL_COPY} -o ${BINOWN} -g ${BINGRP} -m ${BINMODE} \
-		${.CURDIR}/dhclient-script ${DESTDIR}/sbin/dhclient-script
 
 .include <bsd.prog.mk>

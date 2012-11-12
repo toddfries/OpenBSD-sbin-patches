@@ -1,4 +1,4 @@
-/*	$OpenBSD: clparse.c,v 1.40 2012/08/26 23:33:29 krw Exp $	*/
+/*	$OpenBSD: clparse.c,v 1.43 2012/11/08 21:32:55 krw Exp $	*/
 
 /* Parser for dhclient config and lease files... */
 
@@ -66,7 +66,6 @@ read_client_conf(void)
 	config->backoff_cutoff = 15;
 	config->initial_interval = 3;
 	config->bootp_policy = ACCEPT;
-	config->script_name = _PATH_DHCLIENT_SCRIPT;
 	config->requested_options
 	    [config->requested_option_count++] = DHO_SUBNET_MASK;
 	config->requested_options
@@ -145,7 +144,6 @@ read_client_leases(void)
  *	TOK_REBOOT number |
  *	TOK_BACKOFF_CUTOFF number |
  *	TOK_INITIAL_INTERVAL number |
- *	TOK_SCRIPT string |
  *	interface-declaration |
  *	TOK_LEASE client-lease-statement |
  *	TOK_ALIAS client-lease-statement |
@@ -154,7 +152,8 @@ read_client_leases(void)
 void
 parse_client_statement(FILE *cfile)
 {
-	int token, code;
+	u_int8_t ignorelist[256];
+	int token, code, count, i;
 
 	switch (next_token(NULL, cfile)) {
 	case TOK_SEND:
@@ -171,9 +170,9 @@ parse_client_statement(FILE *cfile)
 			config->default_actions[code] = ACTION_SUPERSEDE;
 		return;
 	case TOK_IGNORE:
-		code = parse_option_decl(cfile, &config->defaults[0]);
-		if (code != -1)
-			config->default_actions[code] = ACTION_IGNORE;
+		count = parse_option_list(cfile, ignorelist);
+		for (i = 0; i < count; i++)
+			config->default_actions[ignorelist[i]] = ACTION_IGNORE;
 		return;
 	case TOK_APPEND:
 		code = parse_option_decl(cfile, &config->defaults[0]);
@@ -220,9 +219,6 @@ parse_client_statement(FILE *cfile)
 		return;
 	case TOK_INITIAL_INTERVAL:
 		parse_lease_time(cfile, &config->initial_interval);
-		return;
-	case TOK_SCRIPT:
-		config->script_name = parse_string(cfile);
 		return;
 	case TOK_INTERFACE:
 		parse_interface_declaration(cfile);
@@ -435,7 +431,7 @@ parse_client_lease_statement(FILE *cfile, int is_static)
 	 */
 	pl = NULL;
 	for (lp = client->leases; lp; lp = lp->next) {
-		if (addr_eq(lp->address, lease->address)) {
+		if (lp->address.s_addr == lease->address.s_addr) {
 			if (pl)
 				pl->next = lp->next;
 			else
@@ -473,7 +469,8 @@ parse_client_lease_statement(FILE *cfile, int is_static)
 	if (client->active) {
 		if (client->active->expiry < time(NULL))
 			free_client_lease(client->active);
-		else if (addr_eq(client->active->address, lease->address))
+		else if (client->active->address.s_addr ==
+		    lease->address.s_addr)
 			free_client_lease(client->active);
 		else {
 			client->active->next = client->leases;
@@ -567,7 +564,7 @@ parse_option_decl(FILE *cfile, struct option_data *options)
 	u_int8_t	 hunkbuf[1024];
 	int		 hunkix = 0;
 	char		*fmt;
-	struct iaddr	 ip_addr;
+	struct in_addr	 ip_addr;
 	u_int8_t	*dp;
 	int		 len, code;
 	int		 nul_term = 0;
@@ -624,8 +621,8 @@ parse_option_decl(FILE *cfile, struct option_data *options)
 			case 'I': /* IP address. */
 				if (!parse_ip_addr(cfile, &ip_addr))
 					return (-1);
-				len = ip_addr.len;
-				dp = ip_addr.iabuf;
+				len = sizeof(ip_addr);
+				dp = (char *)&ip_addr;
 alloc:
 				if (hunkix + len > sizeof(hunkbuf)) {
 					parse_warn("option data buffer "
@@ -717,8 +714,8 @@ bad_flag:
 void
 parse_reject_statement(FILE *cfile)
 {
-	struct iaddrlist *list;
-	struct iaddr addr;
+	struct reject_elem *list;
+	struct in_addr addr;
 	int token;
 
 	do {
@@ -728,7 +725,7 @@ parse_reject_statement(FILE *cfile)
 			return;
 		}
 
-		list = malloc(sizeof(struct iaddrlist));
+		list = malloc(sizeof(struct reject_elem));
 		if (!list)
 			error("no memory for reject list!");
 

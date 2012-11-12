@@ -1,4 +1,4 @@
-/*	$OpenBSD: options.c,v 1.41 2012/06/26 14:46:42 krw Exp $	*/
+/*	$OpenBSD: options.c,v 1.44 2012/11/08 21:32:55 krw Exp $	*/
 
 /* DHCP options parsing and reassembly. */
 
@@ -152,7 +152,7 @@ cons_options(struct option_data *options)
 	int buflen = 576 - DHCP_FIXED_LEN;
 	int ix, incr, length, bufix, code, lastopt = -1;
 
-	bzero(buf, buflen);
+	memset(buf, 0, buflen);
 
 	memcpy(buf, DHCP_OPTIONS_COOKIE, 4);
 	if (options[DHO_DHCP_MESSAGE_TYPE].data) {
@@ -198,14 +198,16 @@ cons_options(struct option_data *options)
  * Format the specified option so that a human can easily read it.
  */
 char *
-pretty_print_option(unsigned int code, unsigned char *data, int len,
-    int emit_commas, int emit_quotes)
+pretty_print_option(unsigned int code, struct option_data *option,
+    int emit_punct)
 {
 	static char optbuf[32768]; /* XXX */
 	int hunksize = 0, numhunk = -1, numelem = 0;
 	char fmtbuf[32], *op = optbuf;
 	int i, j, k, opleft = sizeof(optbuf);
+	unsigned char *data = option->data;
 	unsigned char *dp = data;
+	int len = option->len;
 	struct in_addr foo;
 	char comma;
 
@@ -213,7 +215,7 @@ pretty_print_option(unsigned int code, unsigned char *data, int len,
 	if (code > 255)
 		error("pretty_print_option: bad code %d", code);
 
-	if (emit_commas)
+	if (emit_punct)
 		comma = ',';
 	else
 		comma = ' ';
@@ -316,7 +318,7 @@ pretty_print_option(unsigned int code, unsigned char *data, int len,
 			size_t oplen;
 			switch (fmtbuf[j]) {
 			case 't':
-				if (emit_quotes) {
+				if (emit_punct) {
 					*op++ = '"';
 					opleft--;
 				}
@@ -345,7 +347,7 @@ pretty_print_option(unsigned int code, unsigned char *data, int len,
 						opleft--;
 					}
 				}
-				if (emit_quotes) {
+				if (emit_punct) {
 					*op++ = '"';
 					opleft--;
 				}
@@ -446,13 +448,13 @@ pretty_print_option(unsigned int code, unsigned char *data, int len,
 }
 
 void
-do_packet(int len, unsigned int from_port, struct iaddr from,
+do_packet(int len, unsigned int from_port, struct in_addr from,
     struct hardware *hfrom)
 {
 	struct dhcp_packet *packet = &client->packet;
 	struct option_data options[256];
-	struct iaddrlist *ap;
-	void (*handler)(struct iaddr, struct option_data *);
+	struct reject_elem *ap;
+	void (*handler)(struct in_addr, struct option_data *);
 	char *type;
 	int i, options_valid = 1;
 
@@ -520,16 +522,16 @@ do_packet(int len, unsigned int from_port, struct iaddr from,
 
 	if (handler && client->xid == client->packet.xid) {
 		if (hfrom->hlen == 6)
-			note("%s from %s (%s)", type, piaddr(from),
+			note("%s from %s (%s)", type, inet_ntoa(from),
 			    ether_ntoa((struct ether_addr *)hfrom->haddr));
 		else
-			note("%s from %s", type, piaddr(from));
+			note("%s from %s", type, inet_ntoa(from));
 	} else
 		handler = NULL;
 
 	for (ap = config->reject_list; ap && handler; ap = ap->next)
-		if (addr_eq(from, ap->addr)) {
-			note("%s from %s rejected.", type, piaddr(from));
+		if (from.s_addr == ap->addr.s_addr) {
+			note("%s from %s rejected.", type, inet_ntoa(from));
 			handler = NULL;
 		}
 

@@ -1,4 +1,4 @@
-/*	$OpenBSD: dispatch.c,v 1.59 2012/10/11 08:05:05 sthen Exp $	*/
+/*	$OpenBSD: dispatch.c,v 1.65 2012/11/08 21:32:55 krw Exp $	*/
 
 /*
  * Copyright 2004 Henning Brauer <henning@openbsd.org>
@@ -47,7 +47,7 @@
 #include <ifaddrs.h>
 #include <poll.h>
 
-struct timeout timeout;
+struct dhcp_timeout timeout;
 
 /*
  * Use getifaddrs() to get a list of all the attached interfaces.  Find
@@ -109,7 +109,7 @@ void
 dispatch(void)
 {
 	int count, to_msec;
-	struct pollfd fds[2];
+	struct pollfd fds[3];
 	time_t cur_time, howlong;
 	void (*func)(void);
 
@@ -154,10 +154,11 @@ another:
 
 		fds[0].fd = ifi->rfdesc;
 		fds[1].fd = routefd; /* Could be -1, which will be ignored. */
-		fds[0].events = fds[1].events = POLLIN;
+		fds[2].fd = privfd;
+		fds[0].events = fds[1].events = fds[2].events = POLLIN;
 
-		/* Wait for a packet or a timeout... XXX */
-		count = poll(fds, 2, to_msec);
+		/* Wait for a packet or a timeout or privfd ... XXX */
+		count = poll(fds, 3, to_msec);
 
 		/* Not likely to be transitory... */
 		if (count == -1) {
@@ -175,6 +176,9 @@ another:
 			if (ifi)
 				routehandler();
 		}
+		if ((fds[2].revents & (POLLIN | POLLHUP))) {
+			error("lost connection to [priv]");
+		}
 	} while (1);
 }
 
@@ -183,7 +187,7 @@ got_one(void)
 {
 	struct sockaddr_in from;
 	struct hardware hfrom;
-	struct iaddr ifrom;
+	struct in_addr ifrom;
 	ssize_t result;
 
 	if ((result = receive_packet(&from, &hfrom)) == -1) {
@@ -201,13 +205,12 @@ got_one(void)
 	if (result == 0)
 		return;
 
-	ifrom.len = 4;
-	memcpy(ifrom.iabuf, &from.sin_addr, ifrom.len);
+	memcpy(&ifrom, &from.sin_addr, sizeof(ifrom));
 
 	do_packet(result, from.sin_port, ifrom, &hfrom);
 }
 
-int
+void
 interface_link_forceup(char *ifname)
 {
 	struct ifreq ifr;
@@ -219,21 +222,27 @@ interface_link_forceup(char *ifname)
 	memset(&ifr, 0, sizeof(ifr));
 	strlcpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
 	if (ioctl(sock, SIOCGIFFLAGS, (caddr_t)&ifr) == -1) {
+		note("interface_link_forceup: SIOCGIFFLAGS failed (%m)");
 		close(sock);
-		return (-1);
+		return;
 	}
 
-	if ((ifr.ifr_flags & (IFF_UP|IFF_RUNNING)) != (IFF_UP|IFF_RUNNING)) {
-		ifr.ifr_flags |= IFF_UP;
-		if (ioctl(sock, SIOCSIFFLAGS, (caddr_t)&ifr) == -1) {
-			close(sock);
-			return (-1);
-		}
+	/* Force it down and up so others notice link state change. */
+	ifr.ifr_flags &= ~IFF_UP;
+	if (ioctl(sock, SIOCSIFFLAGS, (caddr_t)&ifr) == -1) {
+		note("interface_link_forceup: SIOCSIFFLAGS DOWN failed (%m)");
 		close(sock);
-		return (0);
+		return;
 	}
+
+	ifr.ifr_flags |= IFF_UP;
+	if (ioctl(sock, SIOCSIFFLAGS, (caddr_t)&ifr) == -1) {
+		note("interface_link_forceup: SIOCSIFFLAGS UP failed (%m)");
+		close(sock);
+		return;
+	}
+
 	close(sock);
-	return (1);
 }
 
 int
@@ -320,12 +329,12 @@ int
 get_rdomain(char *name)
 {
 	int rv = 0, s;
-	struct  ifreq ifr;
+	struct ifreq ifr;
 
 	if ((s = socket(AF_INET, SOCK_DGRAM, 0)) == -1)
 	    error("get_rdomain socket: %m");
 
-	bzero(&ifr, sizeof(ifr));
+	memset(&ifr, 0, sizeof(ifr));
 	strlcpy(ifr.ifr_name, name, sizeof(ifr.ifr_name));
 	if (ioctl(s, SIOCGIFRDOMAIN, (caddr_t)&ifr) != -1)
 	    rv = ifr.ifr_rdomainid;
@@ -338,12 +347,13 @@ int
 subnet_exists(struct client_lease *l)
  {
 	struct ifaddrs *ifap, *ifa;
-	in_addr_t mymask, myaddr, mynet, hismask, hisaddr, hisnet;
+	struct in_addr mymask, myaddr, mynet, hismask, hisaddr, hisnet;
 	int myrdomain, hisrdomain;
 
-	bcopy(l->options[DHO_SUBNET_MASK].data, &mymask, 4);
-	bcopy(l->address.iabuf, &myaddr, 4);
-	mynet = mymask & myaddr;
+	memcpy(&mymask.s_addr, l->options[DHO_SUBNET_MASK].data,
+	    sizeof(in_addr_t));
+	myaddr.s_addr = l->address.s_addr;
+	mynet.s_addr = mymask.s_addr & myaddr.s_addr;
 
 	myrdomain = get_rdomain(ifi->name);
 
@@ -361,24 +371,26 @@ subnet_exists(struct client_lease *l)
 		if (hisrdomain != myrdomain)
 			continue;
 
-		hismask = ((struct sockaddr_in *)ifa->ifa_netmask)->
-		    sin_addr.s_addr;
-		hisaddr = ((struct sockaddr_in *)ifa->ifa_addr)->
-		    sin_addr.s_addr;
-		hisnet = hisaddr & hismask;
+		memcpy(&hismask,
+		    &((struct sockaddr_in *)ifa->ifa_netmask)->sin_addr,
+		    sizeof(hismask));
+		memcpy(&hisaddr,
+		    &((struct sockaddr_in *)ifa->ifa_addr)->sin_addr,
+		    sizeof(hisaddr));
+		hisnet.s_addr = hisaddr.s_addr & hismask.s_addr;
 
-		if (hisnet == 0)
+		if (hisnet.s_addr == INADDR_ANY)
 			continue;
 
 		/* Would his packets go out *my* interface? */
-		if (mynet == (hisaddr & mymask)) {
+		if (mynet.s_addr == (hisaddr.s_addr & mymask.s_addr)) {
 			note("interface %s already has the offered subnet!",
 			    ifa->ifa_name);
 			return (1);
 		}
 		
 		/* Would my packets go out *his* interface? */
-		if (hisnet == (myaddr & hismask)) {
+		if (hisnet.s_addr == (myaddr.s_addr & hismask.s_addr)) {
 			note("interface %s already has the offered subnet!",
 			    ifa->ifa_name);
 			return (1);
