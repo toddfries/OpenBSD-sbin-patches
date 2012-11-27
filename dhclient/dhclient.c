@@ -1,4 +1,4 @@
-/*	$OpenBSD: dhclient.c,v 1.177 2012/11/15 14:54:18 krw Exp $	*/
+/*	$OpenBSD: dhclient.c,v 1.182 2012/11/27 15:51:48 krw Exp $	*/
 
 /*
  * Copyright 2004 Henning Brauer <henning@openbsd.org>
@@ -69,7 +69,6 @@ char *path_dhclient_conf = _PATH_DHCLIENT_CONF;
 char *path_dhclient_db = NULL;
 
 int log_perror = 1;
-int privfd;
 int nullfd = -1;
 int no_daemon;
 int unknown_ok = 1;
@@ -84,6 +83,7 @@ struct sockaddr_in sockaddr_broadcast;
 struct interface_info *ifi;
 struct client_state *client;
 struct client_config *config;
+struct imsgbuf *unpriv_ibuf;
 
 int		 findproto(char *, int);
 struct sockaddr	*get_ifa(char *, int);
@@ -97,6 +97,7 @@ void		 get_ifname(char *, char *);
 void		 new_resolv_conf(char *, char *, char *);
 struct client_lease *apply_defaults(struct client_lease *);
 struct client_lease *clone_lease(struct client_lease *);
+void		 socket_nonblockmode(int);
 
 #define	ROUNDUP(a) \
 	    ((a) > 0 ? (1 + (((a) - 1) | (sizeof(long) - 1))) : sizeof(long))
@@ -259,7 +260,7 @@ die:
 int
 main(int argc, char *argv[])
 {
-	int	 ch, fd, quiet = 0, i = 0, pipe_fd[2];
+	int	 ch, fd, quiet = 0, i = 0, socket_fd[2];
 	extern char *__progname;
 	struct passwd *pw;
 	int rtfilter;
@@ -356,13 +357,20 @@ main(int argc, char *argv[])
 	if ((pw = getpwnam("_dhcp")) == NULL)
 		error("no such user: _dhcp");
 
-	if (pipe(pipe_fd) == -1)
-		error("pipe");
+	/* set up the interface */
+	discover_interface();
 
-	fork_privchld(pipe_fd[0], pipe_fd[1]);
+	if (socketpair(AF_UNIX, SOCK_STREAM, PF_UNSPEC, socket_fd) == -1)
+		error("socketpair: %m");
+	socket_nonblockmode(socket_fd[0]);
+	socket_nonblockmode(socket_fd[1]);
 
-	close(pipe_fd[0]);
-	privfd = pipe_fd[1];
+	fork_privchld(socket_fd[0], socket_fd[1]);
+
+	close(socket_fd[0]);
+	if ((unpriv_ibuf = malloc(sizeof(struct imsgbuf))) == NULL)
+		error("no memory for unpriv_ibuf");
+	imsg_init(unpriv_ibuf, socket_fd[1]);
 
 	if ((fd = open(path_dhclient_db, O_RDONLY|O_EXLOCK|O_CREAT, 0)) == -1)
 		error("can't open and lock %s: %m", path_dhclient_db);
@@ -384,9 +392,6 @@ main(int argc, char *argv[])
 	if (setsockopt(routefd, AF_ROUTE, ROUTE_TABLEFILTER, &ifi->rdomain,
 	    sizeof(ifi->rdomain)) == -1)
 		error("setsockopt(ROUTE_TABLEFILTER): %m");
-
-	/* set up the interface */
-	discover_interface();
 
 	if (chroot(_PATH_VAREMPTY) == -1)
 		error("chroot");
@@ -661,6 +666,7 @@ bind_lease(void)
 	lease = apply_defaults(client->new);
 	options = lease->options;
 
+	memset(&mask, 0, sizeof(mask));
 	memcpy(&mask.s_addr, options[DHO_SUBNET_MASK].data,
 	    options[DHO_SUBNET_MASK].len);
 	add_address(ifi->name, ifi->rdomain, client->new->address, mask);
@@ -749,7 +755,7 @@ dhcpoffer(struct in_addr client_addr, struct option_data *options)
 
 	/* If this lease doesn't supply the minimum required parameters,
 	   blow it off. */
-	for (i = 0; config->required_options[i]; i++) {
+	for (i = 0; i < config->required_option_count; i++) {
 		if (!options[config->required_options[i]].len) {
 			note("%s isn't satisfactory.", name);
 			return;
@@ -1688,6 +1694,8 @@ int
 fork_privchld(int fd, int fd2)
 {
 	struct pollfd pfd[1];
+	struct imsgbuf *priv_ibuf;
+	ssize_t n;
 	int nfds;
 
 	switch (fork()) {
@@ -1714,17 +1722,29 @@ fork_privchld(int fd, int fd2)
 	close(nullfd);
 	close(fd2);
 
+	if ((priv_ibuf = malloc(sizeof(struct imsgbuf))) == NULL)
+		error("no memory for priv_ibuf");
+
+	imsg_init(priv_ibuf, fd);
+
 	for (;;) {
-		pfd[0].fd = fd;
+		pfd[0].fd = priv_ibuf->fd;
 		pfd[0].events = POLLIN;
-		if ((nfds = poll(pfd, 1, INFTIM)) == -1)
+		if ((nfds = poll(pfd, 1, INFTIM)) == -1) {
 			if (errno != EINTR)
-				error("poll error");
+				error("poll error: %m");
+		} 
 
 		if (nfds == 0 || !(pfd[0].revents & POLLIN))
 			continue;
 
-		dispatch_imsg(fd);
+		if ((n = imsg_read(priv_ibuf)) == -1)
+			error("imsg_read(priv_ibuf): %m");
+
+		if (n == 0)	/* connection closed */
+			error("dispatch_imsg in main: pipe closed");
+
+		dispatch_imsg(priv_ibuf);
 	}
 }
 
@@ -1774,52 +1794,40 @@ get_ifname(char *ifname, char *arg)
  * Update resolv.conf.
  */
 
-#define MAXRESOLVCONFSIZE 2048
-
 void
 new_resolv_conf(char *ifname, char *domainname, char *nameservers)
 {
-	size_t		 len;
-	struct imsg_hdr	 hdr;
-	struct buf	*buf;
-	char		*contents, *p;
+	struct imsg_resolv_conf  imsg;
+	char			*p;
+	int			 rslt;
 
-	contents = calloc(1, MAXRESOLVCONFSIZE);
+	memset(&imsg, 0, sizeof(imsg));
 
 	/* Build string of contents of new resolv.conf. */
 	if (domainname && strlen(domainname)) {
-		strlcat(contents, "search ", MAXRESOLVCONFSIZE);
-		strlcat(contents, domainname, MAXRESOLVCONFSIZE);
-		strlcat(contents, "\n", MAXRESOLVCONFSIZE);
+		strlcat(imsg.contents, "search ", MAXRESOLVCONFSIZE);
+		strlcat(imsg.contents, domainname, MAXRESOLVCONFSIZE);
+		strlcat(imsg.contents, "\n", MAXRESOLVCONFSIZE);
 	}
 
 	for (p = strsep(&nameservers, " "); p != NULL;
 	    p = strsep(&nameservers, " ")) {
 		if (*p == '\0')
 			continue;
-		strlcat(contents, "nameserver ", MAXRESOLVCONFSIZE);
-		strlcat(contents, p, MAXRESOLVCONFSIZE);
-		strlcat(contents, "\n", MAXRESOLVCONFSIZE);
+		strlcat(imsg.contents, "nameserver ", MAXRESOLVCONFSIZE);
+		strlcat(imsg.contents, p, MAXRESOLVCONFSIZE);
+		strlcat(imsg.contents, "\n", MAXRESOLVCONFSIZE);
 	}
 
-	hdr.code = IMSG_NEW_RESOLV_CONF;
-	hdr.len = sizeof(hdr) +
-	    sizeof(len) + strlen(contents);
+	rslt = imsg_compose(unpriv_ibuf, IMSG_NEW_RESOLV_CONF, 0, 0, -1, &imsg,
+	    sizeof(imsg));
 
-	buf = buf_open(hdr.len);
-	buf_add(buf, &hdr, sizeof(hdr));
-
-	len = strlen(contents);
-	buf_add(buf, &len, sizeof(len));
-	buf_add(buf, contents, len);
-
-	buf_close(privfd, buf);
-
-	free(contents);
+	if (rslt == -1)
+		warning("new_resolv_conf: imsg_compose: %m");
 }
 
 void
-priv_resolv_conf(char *contents)
+priv_resolv_conf(struct imsg_resolv_conf *imsg)
 {
 	ssize_t n;
 	int conffd, tailfd, tailn;
@@ -1833,15 +1841,15 @@ priv_resolv_conf(char *contents)
 		return;
 	}
 
-	if (contents) {
-		n = write(conffd, contents, strlen(contents));
+	if (strlen(imsg->contents)) {
+		n = write(conffd, imsg->contents, strlen(imsg->contents));
 		if (n == -1)
 			note("Couldn't write contents to resolv.conf: %m");
 		else if (n == 0)
 			note("Couldn't write contents to resolv.conf");
-		else if (n < strlen(contents))
+		else if (n < strlen(imsg->contents))
 			note("Short contents write to resolv.conf (%zd vs %zd)",
-			    n, strlen(contents));
+			    n, strlen(imsg->contents));
 	}
 
 	tailfd = open("/etc/resolv.conf.tail", O_RDONLY);
@@ -1871,7 +1879,7 @@ priv_resolv_conf(char *contents)
 		free(buf);
 	}
 
-	if ((!contents || strlen(contents) == 0) && (tailn < 1 || n < 1)) {
+	if ((strlen(imsg->contents) == 0) && (tailn < 1 || n < 1)) {
 		note("No contents for resolv.conf");
 		unlink("/etc/resolv.conf");
 		close(conffd);
@@ -1888,19 +1896,23 @@ struct client_lease *
 apply_defaults(struct client_lease *lease)
 {
 	struct client_lease *newlease;
-	int i;
+	int i, j;
 
 	newlease = clone_lease(lease);
 
 	for (i = 0; i < 256; i++) {
-		switch (config->default_actions[i]) {
-		case ACTION_IGNORE:
-			if (newlease->options[i].len != 0)
+		for (j = 0; j < config->ignored_option_count; j++) {
+			if (config->ignored_options[j] == i) {
 				free(newlease->options[i].data);
-			newlease->options[i].data = NULL;
-			newlease->options[i].len = 0;
-			break;
-
+				newlease->options[i].data = NULL;
+				newlease->options[i].len = 0;
+				break;
+			}
+		}
+		if (j < config->ignored_option_count)
+			continue;
+		
+		switch (config->default_actions[i]) {
 		case ACTION_SUPERSEDE:
 			if (newlease->options[i].len != 0)
 				free(newlease->options[i].data);
@@ -1987,4 +1999,18 @@ clone_lease(struct client_lease *oldlease)
 	}
 
 	return (newlease);
+}
+
+void
+socket_nonblockmode(int fd)
+{
+	int	flags;
+
+	if ((flags = fcntl(fd, F_GETFL, 0)) == -1)
+		error("fcntl F_GETF: %m");
+
+	flags |= O_NONBLOCK;
+
+	if ((flags = fcntl(fd, F_SETFL, flags)) == -1)
+		error("fcntl F_SETFL: %m");
 }
