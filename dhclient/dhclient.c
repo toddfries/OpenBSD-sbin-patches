@@ -1,4 +1,4 @@
-/*	$OpenBSD: dhclient.c,v 1.182 2012/11/27 15:51:48 krw Exp $	*/
+/*	$OpenBSD: dhclient.c,v 1.197 2012/12/19 12:25:38 krw Exp $	*/
 
 /*
  * Copyright 2004 Henning Brauer <henning@openbsd.org>
@@ -74,6 +74,8 @@ int no_daemon;
 int unknown_ok = 1;
 int routefd = -1;
 
+volatile sig_atomic_t quit;
+
 struct in_addr deleting;
 struct in_addr adding;
 
@@ -85,6 +87,7 @@ struct client_state *client;
 struct client_config *config;
 struct imsgbuf *unpriv_ibuf;
 
+void		 sighdlr(int);
 int		 findproto(char *, int);
 struct sockaddr	*get_ifa(char *, int);
 void		 usage(void);
@@ -92,18 +95,25 @@ int		 check_option(struct client_lease *l, int option);
 int		 ipv4addrs(char * buf);
 int		 res_hnok(const char *dn);
 char		*option_as_string(unsigned int code, unsigned char *data, int len);
-pid_t		 fork_privchld(int, int);
-void		 get_ifname(char *, char *);
+void		 fork_privchld(int, int);
+void		 get_ifname(char *);
 void		 new_resolv_conf(char *, char *, char *);
 struct client_lease *apply_defaults(struct client_lease *);
 struct client_lease *clone_lease(struct client_lease *);
 void		 socket_nonblockmode(int);
+void		 apply_ignore_list(char *);
 
 #define	ROUNDUP(a) \
 	    ((a) > 0 ? (1 + (((a) - 1) | (sizeof(long) - 1))) : sizeof(long))
 #define	ADVANCE(x, n) (x += ROUNDUP((n)->sa_len))
 
 static FILE *leaseFile;
+
+void
+sighdlr(int sig)
+{
+	quit = 1;
+}
 
 int
 findproto(char *cp, int n)
@@ -158,7 +168,7 @@ void
 routehandler(void)
 {
 	char msg[2048];
-	struct in_addr a;
+	struct in_addr a, b;
 	ssize_t n;
 	int linkstat;
 	struct rt_msghdr *rtm;
@@ -204,12 +214,25 @@ routehandler(void)
 		if (rtm->rtm_type == RTM_NEWADDR) {
 			if (a.s_addr == adding.s_addr) {
 				adding.s_addr = INADDR_ANY;
+				note("bound to %s -- renewal in %lld seconds.",
+				    inet_ntoa(client->active->address),
+				    (long long)(client->active->renewal -
+				    time(NULL)));
+				client->state = S_BOUND;
+				go_daemon();
 				break;
 			}
 			errmsg = "interface address added";
 		} else {
 			if (a.s_addr == deleting.s_addr) {
 				deleting.s_addr = INADDR_ANY;
+				break;
+			}
+			if (client->active &&
+			    a.s_addr == client->active->address.s_addr) {
+				/* Tell the priv process active_addr is gone. */
+				memset(&b, 0, sizeof(b));
+				add_address(ifi->name, 0, b, b);
 				break;
 			}
 			errmsg = "interface address deleted";
@@ -253,7 +276,6 @@ routehandler(void)
 	return;
 
 die:
-	flush_routes_and_arp_cache(ifi->rdomain);
 	error("routehandler: %s", errmsg);
 }
 
@@ -263,19 +285,23 @@ main(int argc, char *argv[])
 	int	 ch, fd, quiet = 0, i = 0, socket_fd[2];
 	extern char *__progname;
 	struct passwd *pw;
+	char *ignore_list = NULL;
 	int rtfilter;
 
 	/* Initially, log errors to stderr as well as to syslogd. */
 	openlog(__progname, LOG_PID | LOG_NDELAY, DHCPD_LOG_FACILITY);
 	setlogmask(LOG_UPTO(LOG_INFO));
 
-	while ((ch = getopt(argc, argv, "c:dl:qu")) != -1)
+	while ((ch = getopt(argc, argv, "c:di:l:qu")) != -1)
 		switch (ch) {
 		case 'c':
 			path_dhclient_conf = optarg;
 			break;
 		case 'd':
 			no_daemon = 1;
+			break;
+		case 'i':
+			ignore_list = optarg;
 			break;
 		case 'l':
 			path_dhclient_db = optarg;
@@ -306,7 +332,7 @@ main(int argc, char *argv[])
 	if (config == NULL)
 		error("config calloc");
 
-	get_ifname(ifi->name, argv[0]);
+	get_ifname(argv[0]);
 	if (path_dhclient_db == NULL && asprintf(&path_dhclient_db, "%s.%s",
 	    _PATH_DHCLIENT_DB, ifi->name) == -1)
 		error("asprintf");
@@ -327,6 +353,8 @@ main(int argc, char *argv[])
 	ifi->rdomain = get_rdomain(ifi->name);
 
 	read_client_conf();
+	if (ignore_list)
+		apply_ignore_list(ignore_list);
 
 	if (interface_status(ifi->name) == 0) {
 		interface_link_forceup(ifi->name);
@@ -352,7 +380,7 @@ main(int argc, char *argv[])
 
  dispatch:
 	if ((nullfd = open(_PATH_DEVNULL, O_RDWR, 0)) == -1)
-		error("cannot open %s: %m", _PATH_DEVNULL);
+		error("cannot open %s: %s", _PATH_DEVNULL, strerror(errno));
 
 	if ((pw = getpwnam("_dhcp")) == NULL)
 		error("no such user: _dhcp");
@@ -361,7 +389,7 @@ main(int argc, char *argv[])
 	discover_interface();
 
 	if (socketpair(AF_UNIX, SOCK_STREAM, PF_UNSPEC, socket_fd) == -1)
-		error("socketpair: %m");
+		error("socketpair: %s", strerror(errno));
 	socket_nonblockmode(socket_fd[0]);
 	socket_nonblockmode(socket_fd[1]);
 
@@ -373,25 +401,26 @@ main(int argc, char *argv[])
 	imsg_init(unpriv_ibuf, socket_fd[1]);
 
 	if ((fd = open(path_dhclient_db, O_RDONLY|O_EXLOCK|O_CREAT, 0)) == -1)
-		error("can't open and lock %s: %m", path_dhclient_db);
+		error("can't open and lock %s: %s", path_dhclient_db,
+		    strerror(errno));
 	read_client_leases();
 	if ((leaseFile = fopen(path_dhclient_db, "w")) == NULL)
-		error("can't open %s: %m", path_dhclient_db);
+		error("can't open %s: %s", path_dhclient_db, strerror(errno));
 	rewrite_client_leases();
 	close(fd);
 
 	if ((routefd = socket(PF_ROUTE, SOCK_RAW, 0)) == -1)
-		error("socket(PF_ROUTE, SOCK_RAW): %m");
+		error("socket(PF_ROUTE, SOCK_RAW): %s", strerror(errno));
 
 	rtfilter = ROUTE_FILTER(RTM_NEWADDR) | ROUTE_FILTER(RTM_DELADDR) |
 	    ROUTE_FILTER(RTM_IFINFO) | ROUTE_FILTER(RTM_IFANNOUNCE);
 
 	if (setsockopt(routefd, PF_ROUTE, ROUTE_MSGFILTER,
 	    &rtfilter, sizeof(rtfilter)) == -1)
-		error("setsockopt(ROUTE_MSGFILTER): %m");
+		error("setsockopt(ROUTE_MSGFILTER): %s", strerror(errno));
 	if (setsockopt(routefd, AF_ROUTE, ROUTE_TABLEFILTER, &ifi->rdomain,
 	    sizeof(ifi->rdomain)) == -1)
-		error("setsockopt(ROUTE_TABLEFILTER): %m");
+		error("setsockopt(ROUTE_TABLEFILTER): %s", strerror(errno));
 
 	if (chroot(_PATH_VAREMPTY) == -1)
 		error("chroot");
@@ -426,7 +455,8 @@ usage(void)
 {
 	extern char	*__progname;
 
-	fprintf(stderr, "usage: %s [-dqu] [-c file] [-l file] interface\n",
+	fprintf(stderr,
+	    "usage: %s [-dqu] [-c file] [-i options] [-l file] interface\n",
 	    __progname);
 	exit(1);
 }
@@ -466,6 +496,8 @@ state_reboot(void)
 	/* Cancel all timeouts, since a link state change gets us here
 	   and can happen anytime. */
 	cancel_timeout();
+	deleting.s_addr = INADDR_ANY;
+	adding.s_addr = INADDR_ANY;
 
 	/* If we don't remember an active lease, go straight to INIT. */
 	if (!client->active || client->active->is_bootp) {
@@ -669,14 +701,7 @@ bind_lease(void)
 	memset(&mask, 0, sizeof(mask));
 	memcpy(&mask.s_addr, options[DHO_SUBNET_MASK].data,
 	    options[DHO_SUBNET_MASK].len);
-	add_address(ifi->name, ifi->rdomain, client->new->address, mask);
-	if (options[DHO_ROUTERS].len) {
-		memset(&gateway, 0, sizeof(gateway));
-		/* XXX Only use FIRST router address for now. */
-		memcpy(&gateway.s_addr, options[DHO_ROUTERS].data,
-		    options[DHO_ROUTERS].len);
-		add_default_route(ifi->rdomain, client->new->address, gateway);
-	}
+
 	if (options[DHO_DOMAIN_NAME].len)
 		domainname = strdup(pretty_print_option(
 		    DHO_DOMAIN_NAME, &options[DHO_DOMAIN_NAME], 0));
@@ -690,6 +715,19 @@ bind_lease(void)
 		nameservers = strdup("");
 
 	new_resolv_conf(ifi->name, domainname, nameservers);
+
+        /*
+	 * Add address and default route last, so we know when the binding
+	 * is done by the RTM_NEWADDR message being received.
+	 */
+	add_address(ifi->name, ifi->rdomain, client->new->address, mask);
+	if (options[DHO_ROUTERS].len) {
+		memset(&gateway, 0, sizeof(gateway));
+		/* XXX Only use FIRST router address for now. */
+		memcpy(&gateway.s_addr, options[DHO_ROUTERS].data,
+		    options[DHO_ROUTERS].len);
+		add_default_route(ifi->rdomain, client->new->address, gateway);
+	}
 
 	free(domainname);
 	free(nameservers);
@@ -706,12 +744,6 @@ bind_lease(void)
 
 	/* Set timeout to start the renewal process. */
 	set_timeout(client->active->renewal, state_bound);
-
-	note("bound to %s -- renewal in %lld seconds.",
-	    inet_ntoa(client->active->address),
-	    (long long)(client->active->renewal - time(NULL)));
-	client->state = S_BOUND;
-	go_daemon();
 }
 
 /*
@@ -1690,9 +1722,10 @@ toobig:
 	return "<error>";
 }
 
-int
+void
 fork_privchld(int fd, int fd2)
 {
+	struct imsg_cleanup imsg;
 	struct pollfd pfd[1];
 	struct imsgbuf *priv_ibuf;
 	ssize_t n;
@@ -1705,7 +1738,7 @@ fork_privchld(int fd, int fd2)
 	case 0:
 		break;
 	default:
-		return (0);
+		return;
 	}
 
 	if (chdir("/") == -1)
@@ -1713,13 +1746,8 @@ fork_privchld(int fd, int fd2)
 
 	setproctitle("%s [priv]", ifi->name);
 
-	if (!no_daemon) {
-		dup2(nullfd, STDIN_FILENO);
-		dup2(nullfd, STDOUT_FILENO);
-		dup2(nullfd, STDERR_FILENO);
-	}
+	go_daemon();
 
-	close(nullfd);
 	close(fd2);
 
 	if ((priv_ibuf = malloc(sizeof(struct imsgbuf))) == NULL)
@@ -1727,29 +1755,57 @@ fork_privchld(int fd, int fd2)
 
 	imsg_init(priv_ibuf, fd);
 
-	for (;;) {
+	/*
+	 * Catch stuff that might be trying to terminate the program.
+	 */
+
+	signal(SIGHUP, sighdlr);
+	signal(SIGINT, sighdlr);
+	signal(SIGTERM, sighdlr);
+	signal(SIGUSR1, sighdlr);
+	signal(SIGUSR2, sighdlr);
+
+	signal(SIGPIPE, SIG_IGN);
+
+	while (quit == 0) {
 		pfd[0].fd = priv_ibuf->fd;
 		pfd[0].events = POLLIN;
 		if ((nfds = poll(pfd, 1, INFTIM)) == -1) {
-			if (errno != EINTR)
-				error("poll error: %m");
+			if (errno != EINTR) {
+				warning("poll error: %s", strerror(errno));
+				break;
+			}
+			continue;
 		} 
 
 		if (nfds == 0 || !(pfd[0].revents & POLLIN))
 			continue;
 
-		if ((n = imsg_read(priv_ibuf)) == -1)
-			error("imsg_read(priv_ibuf): %m");
+		if ((n = imsg_read(priv_ibuf)) == -1) {
+			warning("imsg_read(priv_ibuf): %s", strerror(errno));
+			break;
+		}
 
-		if (n == 0)	/* connection closed */
-			error("dispatch_imsg in main: pipe closed");
+		if (n == 0) {	/* connection closed */
+			warning("dispatch_imsg in main: pipe closed");
+			break;
+		}
 
 		dispatch_imsg(priv_ibuf);
 	}
+
+	memset(&imsg, 0, sizeof(imsg));
+	strlcpy(imsg.ifname, ifi->name, sizeof(imsg.ifname));
+	imsg.rdomain = ifi->rdomain;
+	imsg.addr = active_addr;
+
+	priv_cleanup(&imsg);
+
+	exit(1);
 }
 
 void
-get_ifname(char *ifname, char *arg)
+get_ifname(char *arg)
 {
 	struct ifgroupreq ifgr;
 	struct ifg_req *ifg;
@@ -1764,13 +1820,13 @@ get_ifname(char *ifname, char *arg)
 		if (ioctl(s, SIOCGIFGMEMB, (caddr_t)&ifgr) == -1) {
 			if (errno == ENOENT)
 				error("no interface in group egress found");
-			error("ioctl SIOCGIFGMEMB: %m");
+			error("ioctl SIOCGIFGMEMB: %s", strerror(errno));
 		}
 		len = ifgr.ifgr_len;
 		if ((ifgr.ifgr_groups = calloc(1, len)) == NULL)
 			error("get_ifname");
 		if (ioctl(s, SIOCGIFGMEMB, (caddr_t)&ifgr) == -1)
-			error("ioctl SIOCGIFGMEMB: %m");
+			error("ioctl SIOCGIFGMEMB: %s", strerror(errno));
 
 		arg = NULL;
 		for (ifg = ifgr.ifgr_groups;
@@ -1782,7 +1838,7 @@ get_ifname(char *ifname, char *arg)
 		}
 
 		if (strlcpy(ifi->name, arg, IFNAMSIZ) >= IFNAMSIZ)
-			error("Interface name too long: %m");
+			error("Interface name too long: %s", strerror(errno));
 
 		free(ifgr.ifgr_groups);
 		close(s);
@@ -1823,53 +1879,58 @@ new_resolv_conf(char *ifname, char *domainname, char *nameservers)
 	    sizeof(imsg));
 
 	if (rslt == -1)
-		warning("new_resolv_conf: imsg_compose: %m");
+		warning("new_resolv_conf: imsg_compose: %s", strerror(errno));
 }
 
 void
 priv_resolv_conf(struct imsg_resolv_conf *imsg)
 {
-	ssize_t n;
-	int conffd, tailfd, tailn;
+	ssize_t n, tailn;
+	int conffd, tailfd;
 	char *buf;
+
+	if (strlen(imsg->contents) == 0)
+		return;
 
 	conffd = open("/etc/resolv.conf",
 	    O_WRONLY | O_CREAT | O_TRUNC | O_SYNC | O_EXLOCK,
 	    S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 	if (conffd == -1) {
-		note("Couldn't open resolv.conf: %m");
+		note("Couldn't open resolv.conf: %s", strerror(errno));
 		return;
 	}
 
-	if (strlen(imsg->contents)) {
-		n = write(conffd, imsg->contents, strlen(imsg->contents));
-		if (n == -1)
-			note("Couldn't write contents to resolv.conf: %m");
-		else if (n == 0)
-			note("Couldn't write contents to resolv.conf");
-		else if (n < strlen(imsg->contents))
-			note("Short contents write to resolv.conf (%zd vs %zd)",
-			    n, strlen(imsg->contents));
-	}
+	n = write(conffd, imsg->contents, strlen(imsg->contents));
+	if (n == -1)
+		note("Couldn't write contents to resolv.conf: %s",
+		    strerror(errno));
+	else if (n < strlen(imsg->contents))
+		note("Short contents write to resolv.conf (%zd vs %zd)",
+		    n, strlen(imsg->contents));
 
 	tailfd = open("/etc/resolv.conf.tail", O_RDONLY);
+	if (tailfd != -1) {
+		buf = calloc(1, MAXRESOLVCONFSIZE);
+		if (buf == NULL) {
+			note("Can't allocate buf for resolv.conf.tail: %s",
+			    strerror(errno));
+			close(tailfd);
+			goto done;
+		}
 
-	n = tailn = 0;
-	buf = calloc(1, MAXRESOLVCONFSIZE);
-
-	if (tailfd == -1)
-		note("Couldn't open resolv.conf.tail: %m");
-	else {
 		tailn = read(tailfd, buf, MAXRESOLVCONFSIZE - 1);
 		close(tailfd);
+
 		if (tailn == -1)
-			note("Couldn't read resolv.conf.tail: %m");
+			note("Couldn't read resolv.conf.tail: %s",
+			    strerror(errno));
 		else if (tailn == 0)
 			note("Got no data from resolv.conf.tail");
-		else {
+		else if (tailn > 0) {
 			n = write(conffd, buf, strlen(buf));
 			if (n == -1)
-				note("Couldn't write tail to resolv.conf: %m");
+				note("Couldn't write tail to resolv.conf: %s",
+				    strerror(errno));
 			else if (n == 0)
 				note("Couldn't write tail to resolv.conf");
 			else if (n < strlen(buf))
@@ -1879,13 +1940,7 @@ priv_resolv_conf(struct imsg_resolv_conf *imsg)
 		free(buf);
 	}
 
-	if ((strlen(imsg->contents) == 0) && (tailn < 1 || n < 1)) {
-		note("No contents for resolv.conf");
-		unlink("/etc/resolv.conf");
-		close(conffd);
-		return;
-	}
-
+done:
 	fchmod(conffd, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 	fchown(conffd, 0, 0); /* root:wheel */
 
@@ -1899,6 +1954,8 @@ apply_defaults(struct client_lease *lease)
 	int i, j;
 
 	newlease = clone_lease(lease);
+	if (newlease == NULL)
+		error("Unable to clone lease");
 
 	for (i = 0; i < 256; i++) {
 		for (j = 0; j < config->ignored_option_count; j++) {
@@ -1919,6 +1976,8 @@ apply_defaults(struct client_lease *lease)
 			newlease->options[i].len = config->defaults[i].len;
 			newlease->options[i].data = calloc(1, 
 			    config->defaults[i].len);
+			if (newlease->options[i].data == NULL)
+				goto cleanup;
 			memcpy(newlease->options[i].data,
 			    config->defaults[i].data, config->defaults[i].len);
 			break;
@@ -1930,6 +1989,8 @@ apply_defaults(struct client_lease *lease)
 			    lease->options[i].len;
 			newlease->options[i].data = calloc(1,
 			    newlease->options[i].len);
+			if (newlease->options[i].data == NULL)
+				goto cleanup;
 			memcpy(newlease->options[i].data,
 			    config->defaults[i].data, config->defaults[i].len);
 			memcpy(newlease->options[i].data + 
@@ -1944,6 +2005,8 @@ apply_defaults(struct client_lease *lease)
 			    lease->options[i].len;
 			newlease->options[i].data = calloc(1,
 			    newlease->options[i].len);
+			if (newlease->options[i].data == NULL)
+				goto cleanup;
 			memcpy(newlease->options[i].data,
 			    lease->options[i].data, lease->options[i].len);
 			memcpy(newlease->options[i].data + 
@@ -1958,6 +2021,8 @@ apply_defaults(struct client_lease *lease)
 				    config->defaults[i].len;
 				newlease->options[i].data = calloc(1, 
 				    config->defaults[i].len);
+				if (newlease->options[i].data == NULL)
+					goto cleanup;
 				memcpy(newlease->options[i].data,
 				    config->defaults[i].data,
 				    config->defaults[i].len);
@@ -1970,6 +2035,15 @@ apply_defaults(struct client_lease *lease)
 	}
 
 	return (newlease);
+
+cleanup:
+	if (newlease)
+		free_client_lease(newlease);
+
+	error("Unable to apply defaults");
+	/* NOTREACHED */
+
+	return (NULL);
 }
 
 struct client_lease *
@@ -1979,6 +2053,8 @@ clone_lease(struct client_lease *oldlease)
 	int i;
 
 	newlease = calloc(1, sizeof(struct client_lease));
+	if (newlease == NULL)
+		goto cleanup;
 
 	newlease->expiry = oldlease->expiry;
 	newlease->renewal = oldlease->renewal;
@@ -1986,19 +2062,33 @@ clone_lease(struct client_lease *oldlease)
 	newlease->is_static = oldlease->is_static;
 	newlease->is_bootp = oldlease->is_bootp;
 
-	if (oldlease->server_name)
+	if (oldlease->server_name) {
 		newlease->server_name = strdup(oldlease->server_name);
-	if (oldlease->filename)
+		if (newlease->server_name == NULL)
+			goto cleanup;
+	}
+	if (oldlease->filename) {
 		newlease->filename = strdup(oldlease->filename);
+		if (newlease->filename == NULL)
+			goto cleanup;
+	}
 
 	for (i = 0; i < 256; i++) {
 		newlease->options[i].len = oldlease->options[i].len;
 		newlease->options[i].data = calloc(1, newlease->options[i].len);
+		if (newlease->options[i].data == NULL)
+			goto cleanup;
 		memcpy(newlease->options[i].data, oldlease->options[i].data,
 		    newlease->options[i].len);
 	}
 
 	return (newlease);
+
+cleanup:
+	if (newlease)
+		free_client_lease(newlease);
+
+	return (NULL);
 }
 
 void
@@ -2007,10 +2097,53 @@ socket_nonblockmode(int fd)
 	int	flags;
 
 	if ((flags = fcntl(fd, F_GETFL, 0)) == -1)
-		error("fcntl F_GETF: %m");
+		error("fcntl F_GETF: %s", strerror(errno));
 
 	flags |= O_NONBLOCK;
 
 	if ((flags = fcntl(fd, F_SETFL, flags)) == -1)
-		error("fcntl F_SETFL: %m");
+		error("fcntl F_SETFL: %s", strerror(errno));
+}
+
+/*
+ * Apply the list of options to be ignored that was provided on the
+ * command line. This will override any ignore list obtained from
+ * dhclient.conf.
+ */
+void
+apply_ignore_list(char *ignore_list)
+{
+	u_int8_t list[256];
+	char *p;
+	int ix, i, j;
+
+	memset(list, 0, sizeof(list));
+	ix = 0;
+
+	for (p = strsep(&ignore_list, ", "); p != NULL;
+	    p = strsep(&ignore_list, ", ")) {
+		if (*p == '\0')
+			continue;
+		
+		for (i = 1; i < DHO_END; i++)
+			if (!strcasecmp(dhcp_options[i].name, p))
+				break;
+
+		if (i == DHO_END) {
+			note("Invalid option name: '%s'", p);
+			return;
+		}
+
+		/* Avoid storing duplicate options in the list. */
+		for (j = 0; j < ix; j++) {
+			if (list[j] == i) {
+				note("Duplicate option name: '%s'", p);
+				return;
+			}
+		}
+		list[ix++] = i;
+	}
+
+	config->ignored_option_count = ix;
+	memcpy(config->ignored_options, list, sizeof(config->ignored_options));
 }

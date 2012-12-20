@@ -1,4 +1,4 @@
-/*	$OpenBSD: kroute.c,v 1.19 2012/11/23 15:25:47 krw Exp $	*/
+/*	$OpenBSD: kroute.c,v 1.25 2012/12/19 12:25:38 krw Exp $	*/
 
 /*
  * Copyright 2012 Kenneth R Westerback <krw@openbsd.org>
@@ -27,6 +27,8 @@
 
 #include <ifaddrs.h>
 
+struct in_addr active_addr;
+
 /*
  * Do equivalent of 
  *
@@ -46,12 +48,14 @@ flush_routes_and_arp_cache(int rdomain)
 	rslt = imsg_compose(unpriv_ibuf, IMSG_FLUSH_ROUTES, 0, 0, -1,
 	    &imsg, sizeof(imsg));
 	if (rslt == -1)
-		warning("flush_routes_and_arp_cache: imsg_compose: %m");
+		warning("flush_routes_and_arp_cache: imsg_compose: %s",
+		    strerror(errno));
 
 	/* Do flush to maximize chances of cleaning up routes on exit. */
 	rslt = imsg_flush(unpriv_ibuf);
 	if (rslt == -1)
-		warning("flush_routes_and_arp_cache: imsg_flush: %m");
+		warning("flush_routes_and_arp_cache: imsg_flush: %s",
+		    strerror(errno));
 }
 
 void
@@ -89,13 +93,13 @@ priv_flush_routes_and_arp_cache(struct imsg_flush_routes *imsg)
 		error("malloc");
 
 	if (sysctl(mib, 7, buf, &needed, NULL, 0) == -1)
-		error("sysctl retrieval of routes: %m");
+		error("sysctl retrieval of routes: %s", strerror(errno));
 
 	if ((s = socket(AF_ROUTE, SOCK_RAW, 0)) == -1)
-		error("opening socket to flush routes: %m");
+		error("opening socket to flush routes: %s", strerror(errno));
 
 	if (asprintf(&routelabel, "DHCLIENT %d", (int)getpid()) == -1)
-		error("recreating route label: %m");
+		error("recreating route label: %s", strerror(errno));
 
 #define ROUNDUP(a) \
     ((a) > 0 ? (1 + (((a) - 1) | (sizeof(long) - 1))) : sizeof(long))
@@ -160,7 +164,7 @@ priv_flush_routes_and_arp_cache(struct imsg_flush_routes *imsg)
 		rlen = write(s, next, rtm->rtm_msglen);
 		if (rlen == -1) {
 			if (errno != ESRCH)
-				error("RTM_DELETE write: %m");
+				error("RTM_DELETE write: %s", strerror(errno));
 		} else if (rlen < (int)rtm->rtm_msglen)
 			error("short RTM_DELETE write (%d)\n", rlen);
 
@@ -200,7 +204,7 @@ add_default_route(int rdomain, struct in_addr addr, struct in_addr gateway)
 	    &imsg, sizeof(imsg));
 
 	if (rslt == -1)
-		warning("add_default_route: imsg_compose: %m");
+		warning("add_default_route: imsg_compose: %s", strerror(errno));
 }
 
 void
@@ -217,7 +221,7 @@ priv_add_default_route(struct imsg_add_default_route *imsg)
 	 */
 
 	if ((s = socket(AF_ROUTE, SOCK_RAW, 0)) == -1)
-		error("Routing Socket open failed: %m");
+		error("Routing Socket open failed: %s", strerror(errno));
 
 	/* Build RTM header */
 
@@ -283,7 +287,7 @@ priv_add_default_route(struct imsg_add_default_route *imsg)
 	len = snprintf(label.sr_label, sizeof(label.sr_label), "DHCLIENT %d",
 	    getpid());
 	if (len == -1)
-		error("writing label for default route: %m");
+		error("writing label for default route: %s", strerror(errno));
 	if (len >= sizeof(label.sr_label))
 		error("label for default route too long (%zd)",
 		    sizeof(label.sr_label));
@@ -298,8 +302,9 @@ priv_add_default_route(struct imsg_add_default_route *imsg)
 	for (i = 0; i < 5; i++) {
 		if (writev(s, iov, iovcnt) != -1)
 			break;
-		if (errno != EEXIST)
-			error("failed to add default route: %m");
+		if (errno != EEXIST && errno != ENETUNREACH)
+			error("failed to add default route: %s",
+			    strerror(errno));
 		sleep(1);
 	}
 
@@ -316,7 +321,7 @@ delete_addresses(char *ifname, int rdomain)
 	struct ifaddrs *ifap, *ifa;
 
 	if (getifaddrs(&ifap) != 0)
-		error("delete_addresses getifaddrs: %m");
+		error("delete_addresses getifaddrs: %s", strerror(errno));
 
 	for (ifa = ifap; ifa; ifa = ifa->ifa_next) {
 		if ((ifa->ifa_flags & IFF_LOOPBACK) ||
@@ -362,7 +367,7 @@ delete_address(char *ifname, int rdomain, struct in_addr addr)
 	    sizeof(imsg));
 
 	if (rslt == -1)
-		warning("delete_address: imsg_compose: %m");
+		warning("delete_address: imsg_compose: %s", strerror(errno));
 }
 
 void
@@ -380,7 +385,7 @@ priv_delete_address(struct imsg_delete_address *imsg)
 	 */
 
 	if ((s = socket(AF_INET, SOCK_STREAM, 0)) == -1)
-		error("socket open failed: %m");
+		error("socket open failed: %s", strerror(errno));
 
 	memset(&ifaliasreq, 0, sizeof(ifaliasreq));
 	strncpy(ifaliasreq.ifra_name, imsg->ifname,
@@ -393,7 +398,8 @@ priv_delete_address(struct imsg_delete_address *imsg)
 
 	/* SIOCDIFADDR will result in a RTM_DELADDR message we must catch! */
 	if (ioctl(s, SIOCDIFADDR, &ifaliasreq) == -1) {
-		warning("SIOCDIFADDR failed (%s): %m", inet_ntoa(imsg->addr));
+		warning("SIOCDIFADDR failed (%s): %s", inet_ntoa(imsg->addr),
+		    strerror(errno));
 		close(s);
 		return;
 	}
@@ -405,7 +411,7 @@ priv_delete_address(struct imsg_delete_address *imsg)
 	 */
 
 	if ((s = socket(AF_ROUTE, SOCK_RAW, 0)) == -1)
-		error("Routing Socket open failed: %m");
+		error("Routing Socket open failed: %s", strerror(errno));
 
 	/* Build RTM header */
 
@@ -451,7 +457,7 @@ priv_delete_address(struct imsg_delete_address *imsg)
 
 	/* ESRCH means the route does not exist to delete. */
 	if ((writev(s, iov, iovcnt) == -1) && (errno != ESRCH))
-		error("failed to delete 127.0.0.1: %m");
+		error("failed to delete 127.0.0.1: %s", strerror(errno));
 
 	close(s);
 }
@@ -483,7 +489,7 @@ add_address(char *ifname, int rdomain, struct in_addr addr,
 	    sizeof(imsg));
 
 	if (rslt == -1)
-		warning("add_address: imsg_compose: %m");
+		warning("add_address: imsg_compose: %s", strerror(errno));
 }
 
 void
@@ -497,12 +503,19 @@ priv_add_address(struct imsg_add_address *imsg)
 	struct sockaddr_in *in;
 	int s, len, i, iovcnt = 0;
 
+	if (imsg->addr.s_addr == INADDR_ANY) {
+		/* Notification that the active_addr has been deleted. */
+		active_addr.s_addr = INADDR_ANY;
+		quit = 1;
+		return;
+	}
+
 	/*
 	 * Add specified address on specified interface.
 	 */
 
 	if ((s = socket(AF_INET, SOCK_STREAM, 0)) == -1)
-		error("socket open failed: %m");
+		error("socket open failed: %s", strerror(errno));
 
 	memset(&ifaliasreq, 0, sizeof(ifaliasreq));
 	strncpy(ifaliasreq.ifra_name, imsg->ifname,
@@ -523,7 +536,8 @@ priv_add_address(struct imsg_add_address *imsg)
 	/* No need to set broadcast address. Kernel can figure it out. */
 
 	if (ioctl(s, SIOCAIFADDR, &ifaliasreq) == -1)
-		warning("SIOCAIFADDR failed (%s): %m", inet_ntoa(imsg->addr));
+		warning("SIOCAIFADDR failed (%s): %s", inet_ntoa(imsg->addr),
+		    strerror(errno));
 
 	close(s);
 
@@ -532,7 +546,7 @@ priv_add_address(struct imsg_add_address *imsg)
 	 */
 
 	if ((s = socket(AF_ROUTE, SOCK_RAW, 0)) == -1)
-		error("Routing Socket open failed: %m");
+		error("Routing Socket open failed: %s", strerror(errno));
 
 	/* Build RTM header */
 
@@ -584,7 +598,7 @@ priv_add_address(struct imsg_add_address *imsg)
 	len = snprintf(label.sr_label, sizeof(label.sr_label), "DHCLIENT %d",
 	    getpid());
 	if (len == -1)
-		error("writing label for host route: %m");
+		error("writing label for host route: %s", strerror(errno));
 	if (len >= sizeof(label.sr_label))
 		error("label for host route too long (%zd)",
 		    sizeof(label.sr_label));
@@ -601,12 +615,63 @@ priv_add_address(struct imsg_add_address *imsg)
 			break;
 		/* XXX Why do some systems get ENETUNREACH? */
 		if (errno == ENETUNREACH) {
-			note("failed to add 127.0.0.1 route: %m");
+			note("failed to add 127.0.0.1 route: %s",
+			    strerror(errno));
 			break;
 		} else if (errno != EEXIST)
-			error("failed to add 127.0.0.1 route: %m");
+			error("failed to add 127.0.0.1 route: %s",
+			    strerror(errno));
 		sleep(1);
 	}
 
 	close(s);
+
+	active_addr = imsg->addr;
+}
+
+/*
+ * [priv_]cleanup removes dhclient installed routes and address.
+ */
+void
+cleanup(struct client_lease *active)
+{
+	struct imsg_cleanup imsg;
+	int rslt;
+
+	memset(&imsg, 0, sizeof(imsg));
+
+	strlcpy(imsg.ifname, ifi->name, sizeof(imsg.ifname));
+	imsg.rdomain = ifi->rdomain;
+	if (active)
+		imsg.addr = active->address;
+
+	rslt = imsg_compose(unpriv_ibuf, IMSG_CLEANUP, 0, 0, -1,
+	    &imsg, sizeof(imsg));
+	if (rslt == -1)
+		warning("cleanup: imsg_compose: %s", strerror(errno));
+
+	/* Do flush so cleanup message gets through immediately. */
+	rslt = imsg_flush(unpriv_ibuf);
+	if (rslt == -1)
+		warning("cleanup: imsg_flush: %s", strerror(errno));
+}
+
+void
+priv_cleanup(struct imsg_cleanup *imsg)
+{
+	struct imsg_flush_routes fimsg;
+	struct imsg_delete_address dimsg;
+
+	memset(&fimsg, 0, sizeof(fimsg));
+	fimsg.rdomain = imsg->rdomain;
+	priv_flush_routes_and_arp_cache(&fimsg);
+
+	if (imsg->addr.s_addr == INADDR_ANY)
+		return;
+
+	memset(&dimsg, 0, sizeof(dimsg));
+	strlcpy(dimsg.ifname, imsg->ifname, sizeof(imsg->ifname));
+	dimsg.rdomain = imsg->rdomain;
+	dimsg.addr = imsg->addr;
+	priv_delete_address(&dimsg);
 }

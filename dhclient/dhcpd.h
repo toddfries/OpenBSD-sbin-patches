@@ -1,4 +1,4 @@
-/*	$OpenBSD: dhcpd.h,v 1.95 2012/11/27 15:51:48 krw Exp $	*/
+/*	$OpenBSD: dhcpd.h,v 1.98 2012/12/19 12:25:38 krw Exp $	*/
 
 /*
  * Copyright (c) 2004 Henning Brauer <henning@openbsd.org>
@@ -196,6 +196,8 @@ extern struct client_config *config;
 extern struct imsgbuf *unpriv_ibuf;
 extern struct in_addr deleting;
 extern struct in_addr adding;
+extern struct in_addr active_addr;
+extern volatile sig_atomic_t quit;
 
 /* options.c */
 int cons_options(struct option_data *);
@@ -210,7 +212,7 @@ int note(char *, ...) __attribute__ ((__format__ (__printf__, 1, 2)));
 #ifdef DEBUG
 int debug(char *, ...) __attribute__ ((__format__ (__printf__, 1, 2)));
 #endif
-int parse_warn(char *, ...) __attribute__ ((__format__ (__printf__, 1, 2)));
+int parse_warn(char *);
 
 /* conflex.c */
 extern int lexline, lexchar;
@@ -296,6 +298,8 @@ struct client_lease *packet_to_lease(struct in_addr, struct option_data *);
 void go_daemon(void);
 
 void routehandler(void);
+
+void cleanup(struct client_lease *);
 
 /* packet.c */
 void assemble_hw_header(unsigned char *, int *, struct hardware *);

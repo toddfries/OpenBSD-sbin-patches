@@ -1,4 +1,4 @@
-/*	$OpenBSD: privsep.c,v 1.24 2012/11/23 15:25:47 krw Exp $ */
+/*	$OpenBSD: privsep.c,v 1.26 2012/12/04 19:24:03 krw Exp $ */
 
 /*
  * Copyright (c) 2004 Henning Brauer <henning@openbsd.org>
@@ -30,7 +30,8 @@ dispatch_imsg(struct imsgbuf *ibuf)
 
 	for (;;) {
 		if ((n = imsg_get(ibuf, &imsg)) == -1)
-			error("dispatch_imsg: imsg_get failure: %m");
+			error("dispatch_imsg: imsg_get failure: %s",
+			    strerror(errno));
 
 		if (n == 0)
 			break;
@@ -74,6 +75,14 @@ dispatch_imsg(struct imsgbuf *ibuf)
 				warning("bad IMSG_NEW_RESOLV_CONF");
 			else
 				priv_resolv_conf(imsg.data);
+			break;
+
+		case IMSG_CLEANUP:
+			if (imsg.hdr.len != IMSG_HEADER_SIZE +
+			    sizeof(struct imsg_cleanup))
+				warning("bad IMSG_CLEANUP");
+			else
+				priv_cleanup(imsg.data);
 			break;
 
 		default:
