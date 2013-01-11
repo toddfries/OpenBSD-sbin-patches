@@ -1,4 +1,4 @@
-/*	$OpenBSD: dhclient.c,v 1.197 2012/12/19 12:25:38 krw Exp $	*/
+/*	$OpenBSD: dhclient.c,v 1.202 2013/01/06 15:33:12 krw Exp $	*/
 
 /*
  * Copyright 2004 Henning Brauer <henning@openbsd.org>
@@ -112,7 +112,7 @@ static FILE *leaseFile;
 void
 sighdlr(int sig)
 {
-	quit = 1;
+	quit = sig;
 }
 
 int
@@ -218,7 +218,6 @@ routehandler(void)
 				    inet_ntoa(client->active->address),
 				    (long long)(client->active->renewal -
 				    time(NULL)));
-				client->state = S_BOUND;
 				go_daemon();
 				break;
 			}
@@ -279,14 +278,19 @@ die:
 	error("routehandler: %s", errmsg);
 }
 
+char **saved_argv;
+
 int
 main(int argc, char *argv[])
 {
+	struct stat sb;
 	int	 ch, fd, quiet = 0, i = 0, socket_fd[2];
 	extern char *__progname;
 	struct passwd *pw;
 	char *ignore_list = NULL;
 	int rtfilter;
+
+	saved_argv = argv;
 
 	/* Initially, log errors to stderr as well as to syslogd. */
 	openlog(__progname, LOG_PID | LOG_NDELAY, DHCPD_LOG_FACILITY);
@@ -305,6 +309,11 @@ main(int argc, char *argv[])
 			break;
 		case 'l':
 			path_dhclient_db = optarg;
+			if (lstat(path_dhclient_db, &sb) != -1) {
+				if (!S_ISREG(sb.st_mode))
+					error("'%s' is not a regular file",
+					    path_dhclient_db);
+			}
 			break;
 		case 'q':
 			quiet = 1;
@@ -391,7 +400,9 @@ main(int argc, char *argv[])
 	if (socketpair(AF_UNIX, SOCK_STREAM, PF_UNSPEC, socket_fd) == -1)
 		error("socketpair: %s", strerror(errno));
 	socket_nonblockmode(socket_fd[0]);
+	fcntl(socket_fd[0], F_SETFD, FD_CLOEXEC);
 	socket_nonblockmode(socket_fd[1]);
+	fcntl(socket_fd[1], F_SETFD, FD_CLOEXEC);
 
 	fork_privchld(socket_fd[0], socket_fd[1]);
 
@@ -738,6 +749,8 @@ bind_lease(void)
 		free_client_lease(client->active);
 	client->active = client->new;
 	client->new = NULL;
+
+	client->state = S_BOUND;
 
 	/* Write out new leases file. */
 	rewrite_client_leases();
@@ -1427,6 +1440,7 @@ void
 rewrite_client_leases(void)
 {
 	struct client_lease *lp;
+	char *leasestr;
 
 	if (!leaseFile)	/* XXX */
 		error("lease file not open");
@@ -1435,64 +1449,103 @@ rewrite_client_leases(void)
 	rewind(leaseFile);
 
 	for (lp = client->leases; lp; lp = lp->next) {
+		/* Skip any leases that duplicate the active lease address. */
 		if (client->active && lp->address.s_addr ==
 		    client->active->address.s_addr)
 			continue;
-		write_client_lease(lp);
+		/* Don't write out static leases from dhclient.conf. */
+		if (lp->is_static)
+			continue;
+		leasestr = lease_as_string(lp);
+		if (leasestr)
+			fprintf(leaseFile, "%s", leasestr);
+		else
+			warning("cannot make lease into string");
 	}
 
-	if (client->active)
-		write_client_lease(client->active);
+	if (client->active) {
+		leasestr = lease_as_string(client->active);
+		if (leasestr)
+			fprintf(leaseFile, "%s", leasestr);
+		else
+			warning("cannot make lease into string");
+	}
 
 	fflush(leaseFile);
 	ftruncate(fileno(leaseFile), ftello(leaseFile));
 	fsync(fileno(leaseFile));
 }
 
-void
-write_client_lease(struct client_lease *lease)
+char *
+lease_as_string(struct client_lease *lease)
 {
-	struct tm *t;
-	int i;
+	static char leasestr[8192];
+	char *p;
+	size_t sz, rsltsz;
+	int i, rslt;
 
-	/* If the lease came from the config file, we don't need to stash
-	   a copy in the lease database. */
-	if (lease->is_static)
-		return;
+	sz = sizeof(leasestr);
+	p = leasestr;
+	memset(p, 0, sz);
 
-	if (!leaseFile)	/* XXX */
-		error("lease file not open");
+	rslt = snprintf(p, sz, "lease {\n"
+	    "%s  interface \"%s\";\n  fixed-address %s;\n",
+	    (lease->is_bootp) ? "  bootp;\n" : "", ifi->name,
+	    inet_ntoa(lease->address));
+	if (rslt == -1 || rslt >= sz)
+		return (NULL);
+	p += rslt;
+	sz -= rslt;
 
-	fprintf(leaseFile, "lease {\n");
-	if (lease->is_bootp)
-		fprintf(leaseFile, "  bootp;\n");
-	fprintf(leaseFile, "  interface \"%s\";\n", ifi->name);
-	fprintf(leaseFile, "  fixed-address %s;\n", inet_ntoa(lease->address));
-	if (lease->filename)
-		fprintf(leaseFile, "  filename \"%s\";\n", lease->filename);
-	if (lease->server_name)
-		fprintf(leaseFile, "  server-name \"%s\";\n",
+	if (lease->filename) {
+		rslt = snprintf(p, sz, "  filename \"%s\";\n", lease->filename);
+		if (rslt == -1 || rslt >= sz)
+			return (NULL);
+		p += rslt;
+		sz -= rslt;
+	}
+	if (lease->server_name) {
+		rslt = snprintf(p, sz, "  server-name \"%s\";\n",
 		    lease->server_name);
-	for (i = 0; i < 256; i++)
-		if (lease->options[i].len)
-			fprintf(leaseFile, "  option %s %s;\n",
-			    dhcp_options[i].name,
-			    pretty_print_option(i, &lease->options[i], 1));
+		if (rslt == -1 || rslt >= sz)
+			return (NULL);
+		p += rslt;
+		sz -= rslt;
+	}
 
-	t = gmtime(&lease->renewal);
-	fprintf(leaseFile, "  renew %d %d/%d/%d %02d:%02d:%02d;\n",
-	    t->tm_wday, t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
-	    t->tm_hour, t->tm_min, t->tm_sec);
-	t = gmtime(&lease->rebind);
-	fprintf(leaseFile, "  rebind %d %d/%d/%d %02d:%02d:%02d;\n",
-	    t->tm_wday, t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
-	    t->tm_hour, t->tm_min, t->tm_sec);
-	t = gmtime(&lease->expiry);
-	fprintf(leaseFile, "  expire %d %d/%d/%d %02d:%02d:%02d;\n",
-	    t->tm_wday, t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
-	    t->tm_hour, t->tm_min, t->tm_sec);
-	fprintf(leaseFile, "}\n");
-	fflush(leaseFile);
+	for (i = 0; i < 256; i++) {
+		if (lease->options[i].len == 0)
+			continue;
+		rslt = snprintf(p, sz, "  option %s %s;\n",
+		    dhcp_options[i].name,
+		    pretty_print_option(i, &lease->options[i], 1));
+		if (rslt == -1 || rslt >= sz)
+			return (NULL);
+		p += rslt;
+		sz -= rslt;
+	}
+
+#define TIMEFMT "%u %Y/%m/%d %T;\n"
+	rsltsz = strftime(p, sz, "  renew " TIMEFMT, gmtime(&lease->renewal));
+	if (rsltsz == 0)
+		return (NULL);
+	p += rsltsz;
+	sz -= rsltsz;
+	rsltsz = strftime(p, sz, "  rebind " TIMEFMT, gmtime(&lease->rebind));
+	if (rsltsz == 0)
+		return (NULL);
+	p += rsltsz;
+	sz -= rsltsz;
+	rsltsz = strftime(p, sz, "  expire " TIMEFMT, gmtime(&lease->expiry));
+	if (rsltsz == 0)
+		return (NULL);
+	p += rsltsz;
+	sz -= rsltsz;
+	rslt = snprintf(p, sz, "}\n");
+	if (rslt == -1 || rslt >= sz)
+		return (NULL);
+
+	return (leasestr);
 }
 
 void
@@ -1519,6 +1572,17 @@ go_daemon(void)
 		close(nullfd);
 		nullfd = -1;
 	}
+
+	/*
+	 * Catch stuff that might be trying to terminate the program.
+	 */
+	signal(SIGHUP, sighdlr);
+	signal(SIGINT, sighdlr);
+	signal(SIGTERM, sighdlr);
+	signal(SIGUSR1, sighdlr);
+	signal(SIGUSR2, sighdlr);
+
+	signal(SIGPIPE, SIG_IGN);
 }
 
 int
@@ -1755,18 +1819,6 @@ fork_privchld(int fd, int fd2)
 
 	imsg_init(priv_ibuf, fd);
 
-	/*
-	 * Catch stuff that might be trying to terminate the program.
-	 */
-
-	signal(SIGHUP, sighdlr);
-	signal(SIGINT, sighdlr);
-	signal(SIGTERM, sighdlr);
-	signal(SIGUSR1, sighdlr);
-	signal(SIGUSR2, sighdlr);
-
-	signal(SIGPIPE, SIG_IGN);
-
 	while (quit == 0) {
 		pfd[0].fd = priv_ibuf->fd;
 		pfd[0].events = POLLIN;
@@ -1794,12 +1846,23 @@ fork_privchld(int fd, int fd2)
 		dispatch_imsg(priv_ibuf);
 	}
 
+	imsg_clear(priv_ibuf);
+	close(fd);
+
 	memset(&imsg, 0, sizeof(imsg));
 	strlcpy(imsg.ifname, ifi->name, sizeof(imsg.ifname));
 	imsg.rdomain = ifi->rdomain;
 	imsg.addr = active_addr;
 
 	priv_cleanup(&imsg);
+
+	if (quit == SIGHUP) {
+		warning("Received SIGHUP; restarting.");
+		signal(SIGHUP, SIG_IGN); /* will be restored after exec */
+		execvp(saved_argv[0], saved_argv);
+		error("RESTART FAILED: '%s': %s", saved_argv[0],
+		    strerror(errno));
+	}
 
 	exit(1);
 }
