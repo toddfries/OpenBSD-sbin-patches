@@ -1,4 +1,4 @@
-/*	$OpenBSD: kroute.c,v 1.26 2012/12/29 14:40:00 krw Exp $	*/
+/*	$OpenBSD: kroute.c,v 1.30 2013/02/03 15:10:36 krw Exp $	*/
 
 /*
  * Copyright 2012 Kenneth R Westerback <krw@openbsd.org>
@@ -36,13 +36,14 @@ struct in_addr active_addr;
  *	arp -dan
  */
 void
-flush_routes_and_arp_cache(int rdomain)
+flush_routes_and_arp_cache(char *ifname, int rdomain)
 {
 	struct imsg_flush_routes imsg;
 	int			 rslt;
 
 	memset(&imsg, 0, sizeof(imsg));
 
+	strlcpy(imsg.ifname, ifname, sizeof(imsg.ifname));
 	imsg.rdomain = rdomain;
 
 	rslt = imsg_compose(unpriv_ibuf, IMSG_FLUSH_ROUTES, 0, 0, -1,
@@ -61,6 +62,7 @@ flush_routes_and_arp_cache(int rdomain)
 void
 priv_flush_routes_and_arp_cache(struct imsg_flush_routes *imsg)
 {
+	char ifname[IF_NAMESIZE];
 	struct sockaddr *rti_info[RTAX_MAX];
 	int mib[7];
 	size_t needed;
@@ -68,6 +70,7 @@ priv_flush_routes_and_arp_cache(struct imsg_flush_routes *imsg)
 	struct rt_msghdr *rtm;
 	struct sockaddr *sa;
 	struct sockaddr_dl *sdl;
+	struct sockaddr_in *sa_in;
 	struct sockaddr_inarp *sin;
 	struct sockaddr_rtlabel *sa_rl;
 	int s, seqno = 0, rlen, i;
@@ -83,14 +86,14 @@ priv_flush_routes_and_arp_cache(struct imsg_flush_routes *imsg)
 	if (sysctl(mib, 7, NULL, &needed, NULL, 0) == -1) {
 		if (imsg->rdomain != 0 && errno == EINVAL)
 			return;
-		error("could not get routes");
+		error("sysctl size of routes: %s", strerror(errno));
 	}
 
 	if (needed == 0)
 		return;
 
 	if ((buf = malloc(needed)) == NULL)
-		error("malloc");
+		error("no memory for sysctl routes");
 
 	if (sysctl(mib, 7, buf, &needed, NULL, 0) == -1)
 		error("sysctl retrieval of routes: %s", strerror(errno));
@@ -125,11 +128,19 @@ priv_flush_routes_and_arp_cache(struct imsg_flush_routes *imsg)
 
 		sa = (struct sockaddr *)(next + rtm->rtm_hdrlen);
 
-		if (rti_info[RTAX_LABEL]) {
-			sa_rl = (struct sockaddr_rtlabel *)rti_info[RTAX_LABEL];
-			if (strcmp(routelabel, sa_rl->sr_label))
+		sa_rl = (struct sockaddr_rtlabel *)rti_info[RTAX_LABEL];
+		if (sa_rl) {
+			/* Always delete routes we labeled. */
+			if (strcmp(routelabel, sa_rl->sr_label) == 0)
+				goto delete;
+
+			/* Never delete routes labelled by another dhclient. */
+			if (strlen(sa_rl->sr_label) > 8 &&
+			    strncmp("DHCLIENT ", sa_rl->sr_label, 9) == 0)
 				continue;
-		} else if (rtm->rtm_flags & RTF_LLINFO) {
+		}
+
+		if (rtm->rtm_flags & RTF_LLINFO) {
 			if (rtm->rtm_flags & RTF_GATEWAY)
 				continue;
 
@@ -149,14 +160,29 @@ priv_flush_routes_and_arp_cache(struct imsg_flush_routes *imsg)
 				case IFT_ISO88025:
 				case IFT_CARP:
 					/* Delete it. */
-					break;
+					goto delete;
 				default:
-					continue;
+					break;
 				}
 			}
-		} else
 			continue;
+		}
 
+		if (rtm->rtm_flags & RTF_GATEWAY) {
+			memset(ifname, 0, sizeof(ifname));
+			if (if_indextoname(rtm->rtm_index, ifname) == NULL)
+				continue;
+			sa_in = (struct sockaddr_in *)rti_info[RTAX_NETMASK];
+			if (sa_in && 
+			    sa_in->sin_addr.s_addr == INADDR_ANY &&
+			    rtm->rtm_tableid == imsg->rdomain &&
+			    strcmp(imsg->ifname, ifname) == 0)
+				goto delete;
+		}
+
+		continue;
+
+delete:
 		rtm->rtm_type = RTM_DELETE;
 		rtm->rtm_seq = seqno;
 		rtm->rtm_tableid = imsg->rdomain;
@@ -674,4 +700,112 @@ priv_cleanup(struct imsg_cleanup *imsg)
 	dimsg.rdomain = imsg->rdomain;
 	dimsg.addr = imsg->addr;
 	priv_delete_address(&dimsg);
+}
+
+int
+resolv_conf_priority(int domain)
+{
+	struct iovec iov[3];
+	struct {
+		struct rt_msghdr	m_rtm;
+		char			m_space[512];
+	} m_rtmsg;
+	struct sockaddr *rti_info[RTAX_MAX];
+	char *routelabel;
+	struct sockaddr *sa;
+	struct sockaddr_in sin;
+	struct sockaddr_rtlabel *sa_rl;
+	pid_t pid;
+	ssize_t len;
+	u_int32_t seq;
+	int i, fd, rslt, iovcnt = 0;
+
+	rslt = 0;
+
+	fd = socket(PF_ROUTE, SOCK_RAW, AF_INET);
+	if (fd == -1) {
+		warning("default route socket: %s", strerror(errno));
+		return (0);
+	}
+
+	/* Build RTM header */
+
+	memset(&m_rtmsg, 0, sizeof(m_rtmsg));
+
+	m_rtmsg.m_rtm.rtm_version = RTM_VERSION;
+	m_rtmsg.m_rtm.rtm_type = RTM_GET;
+	m_rtmsg.m_rtm.rtm_msglen = sizeof(m_rtmsg.m_rtm);
+	m_rtmsg.m_rtm.rtm_flags = RTF_STATIC | RTF_GATEWAY | RTF_UP;
+	m_rtmsg.m_rtm.rtm_seq = seq = arc4random();
+
+	iov[iovcnt].iov_base = &m_rtmsg.m_rtm;
+	iov[iovcnt++].iov_len = sizeof(m_rtmsg.m_rtm);
+	
+	/* Set destination & netmask addresses of all zeros. */
+
+	m_rtmsg.m_rtm.rtm_addrs = RTA_DST | RTA_NETMASK;
+
+	memset(&sin, 0, sizeof(sin));
+	sin.sin_len = sizeof(sin);
+	sin.sin_family = AF_INET;
+
+	iov[iovcnt].iov_base = &sin;
+	iov[iovcnt++].iov_len = sizeof(sin);
+	iov[iovcnt].iov_base = &sin;
+	iov[iovcnt++].iov_len = sizeof(sin);
+
+	m_rtmsg.m_rtm.rtm_msglen += 2 * sizeof(sin);
+
+	if (writev(fd, iov, iovcnt) == -1) {
+		warning("default route write: %s", strerror(errno));
+		return (0);
+	}
+
+	pid = getpid();
+
+	do {
+		len = read(fd, &m_rtmsg, sizeof(m_rtmsg));
+		if (len == -1) {
+			warning("get default route read: %s", strerror(errno));
+			break;
+		} else if (len == 0) {
+			warning("no data from default route read");
+			break;
+		}
+		if (m_rtmsg.m_rtm.rtm_version != RTM_VERSION)
+			continue;
+		if (m_rtmsg.m_rtm.rtm_type == RTM_GET &&
+		    m_rtmsg.m_rtm.rtm_pid == pid &&
+		    m_rtmsg.m_rtm.rtm_seq == seq) {
+			if (m_rtmsg.m_rtm.rtm_errno) {
+				warning("default route read rtm: %s",
+				    strerror(m_rtmsg.m_rtm.rtm_errno));
+				goto done;
+			}
+			break;
+		}
+	} while (1);
+
+	sa = (struct sockaddr *)((char *)&m_rtmsg + m_rtmsg.m_rtm.rtm_hdrlen);
+	memset(rti_info, 0, sizeof(rti_info));
+	for (i = 0; i < RTAX_MAX; i++) {
+		if (m_rtmsg.m_rtm.rtm_addrs & (1 << i)) {
+			rti_info[i] = sa;
+			sa = (struct sockaddr *)((char *)(sa) +
+			    ROUNDUP(sa->sa_len));
+		}
+	}
+
+	sa_rl = (struct sockaddr_rtlabel *)rti_info[RTAX_LABEL];
+	if (sa_rl) {
+		if (asprintf(&routelabel, "DHCLIENT %d", (int)getpid()) == -1)
+			error("recreating route label: %s", strerror(errno));
+		if (strcmp(routelabel, sa_rl->sr_label) == 0)
+			rslt = 1;
+		free(routelabel);
+	}
+
+done:
+	close(fd);
+	return (rslt);
 }

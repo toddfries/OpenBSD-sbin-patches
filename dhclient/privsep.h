@@ -1,4 +1,4 @@
-/*	$OpenBSD: privsep.h,v 1.10 2012/12/02 17:03:19 krw Exp $ */
+/*	$OpenBSD: privsep.h,v 1.14 2013/02/02 04:18:30 krw Exp $ */
 
 /*
  * Copyright (c) 2004 Henning Brauer <henning@openbsd.org>
@@ -20,16 +20,14 @@
 
 #include <imsg.h>
 
-#define MAXRESOLVCONFSIZE	2048
-
 enum imsg_code {
 	IMSG_NONE,
 	IMSG_DELETE_ADDRESS,
 	IMSG_ADD_ADDRESS,
 	IMSG_FLUSH_ROUTES,
 	IMSG_ADD_DEFAULT_ROUTE,
-	IMSG_NEW_RESOLV_CONF,
-	IMSG_CLEANUP
+	IMSG_CLEANUP,
+	IMSG_WRITE_FILE
 };
 
 struct imsg_delete_address {
@@ -46,6 +44,7 @@ struct imsg_add_address {
 };
 
 struct imsg_flush_routes {
+	char	ifname[IFNAMSIZ];
 	int	rdomain;
 };
 
@@ -56,13 +55,25 @@ struct imsg_add_default_route {
 };
 
 struct imsg_resolv_conf {
-	char	contents[MAXRESOLVCONFSIZE];
+	size_t	len;
+	char	contents[1];
 };
 
 struct imsg_cleanup {
 	char	ifname[IFNAMSIZ];
 	int	rdomain;
 	struct	in_addr addr;
+};
+
+struct imsg_write_file {
+	char	path[MAXPATHLEN];
+	int	rdomain;
+	int	flags;
+	mode_t	mode;
+	size_t	len;
+	uid_t	uid;
+	gid_t	gid;
+	char	contents[1];
 };
 
 void	dispatch_imsg(struct imsgbuf *);
@@ -72,3 +83,4 @@ void	priv_add_address(struct imsg_add_address *);
 void	priv_flush_routes_and_arp_cache(struct imsg_flush_routes *);
 void	priv_add_default_route(struct imsg_add_default_route *);
 void	priv_cleanup(struct imsg_cleanup *);
+void	priv_write_file(struct imsg_write_file *);

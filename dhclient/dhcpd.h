@@ -1,4 +1,4 @@
-/*	$OpenBSD: dhcpd.h,v 1.99 2013/01/05 20:34:17 krw Exp $	*/
+/*	$OpenBSD: dhcpd.h,v 1.108 2013/02/03 21:04:19 krw Exp $	*/
 
 /*
  * Copyright (c) 2004 Henning Brauer <henning@openbsd.org>
@@ -84,8 +84,8 @@ struct option_data {
 };
 
 struct reject_elem {
-	struct reject_elem *next;
-	struct in_addr addr;
+	struct reject_elem	*next;
+	struct in_addr		 addr;
 };
 
 struct hardware {
@@ -100,6 +100,7 @@ struct client_lease {
 	struct in_addr		 address;
 	char			*server_name;
 	char			*filename;
+	char			*resolv_conf;
 	unsigned int		 is_static : 1;
 	unsigned int		 is_bootp : 1;
 	struct option_data	 options[256];
@@ -142,46 +143,47 @@ struct client_config {
 	enum { IGNORE, ACCEPT, PREFER }
 				 bootp_policy;
 	struct reject_elem	*reject_list;
+	char			*resolv_tail;
 };
 
 struct client_state {
-	struct client_lease	 *active;
-	struct client_lease	 *new;
-	struct client_lease	 *offered_leases;
-	struct client_lease	 *leases;
-	enum dhcp_state		  state;
-	struct in_addr		  destination;
-	u_int32_t		  xid;
-	u_int16_t		  secs;
-	time_t			  first_sending;
-	time_t			  interval;
-	struct dhcp_packet	  packet;
-	int			  packet_length;
-	struct in_addr		  requested_address;
+	struct client_lease	*active;
+	struct client_lease	*new;
+	struct client_lease	*offered_leases;
+	struct client_lease	*leases;
+	enum dhcp_state		 state;
+	struct in_addr		 destination;
+	u_int32_t		 xid;
+	u_int16_t		 secs;
+	time_t			 first_sending;
+	time_t			 interval;
+	struct dhcp_packet	 packet;
+	int			 packet_length;
+	struct in_addr		 requested_address;
 };
 
 struct interface_info {
-	struct hardware		 hw_address;
-	struct in_addr		 primary_address;
-	char			 name[IFNAMSIZ];
-	int			 rfdesc;
-	int			 wfdesc;
-	int			 ufdesc; /* unicast */
-	unsigned char		*rbuf;
-	size_t			 rbuf_max;
-	size_t			 rbuf_offset;
-	size_t			 rbuf_len;
-	struct ifreq		*ifp;
-	int			 noifmedia;
-	int			 errors;
-	u_int16_t		 index;
-	int			 linkstat;
-	int			 rdomain;
+	struct hardware	 hw_address;
+	struct in_addr	 primary_address;
+	char		 name[IFNAMSIZ];
+	int		 rfdesc;
+	int		 wfdesc;
+	int		 ufdesc; /* unicast */
+	unsigned char	*rbuf;
+	size_t		 rbuf_max;
+	size_t		 rbuf_offset;
+	size_t		 rbuf_len;
+	struct ifreq	*ifp;
+	int		 noifmedia;
+	int		 errors;
+	u_int16_t	 index;
+	int		 linkstat;
+	int		 rdomain;
 };
 
 struct dhcp_timeout {
-	time_t		 when;
-	void		 (*func)(void);
+	time_t	 when;
+	void	 (*func)(void);
 };
 
 #define	_PATH_DHCLIENT_CONF	"/etc/dhclient.conf"
@@ -267,12 +269,13 @@ void putShort(unsigned char *, int);
 /* dhclient.c */
 extern char *path_dhclient_conf;
 extern char *path_dhclient_db;
+extern char path_option_db[MAXPATHLEN];
 extern int log_perror;
 extern int routefd;
 
-void dhcpoffer(struct in_addr, struct option_data *);
-void dhcpack(struct in_addr, struct option_data *);
-void dhcpnak(struct in_addr, struct option_data *);
+void dhcpoffer(struct in_addr, struct option_data *, char *);
+void dhcpack(struct in_addr, struct option_data *, char *);
+void dhcpnak(struct in_addr, struct option_data *, char *);
 
 void send_discover(void);
 void send_request(void);
@@ -292,7 +295,8 @@ void make_decline(struct client_lease *);
 
 void free_client_lease(struct client_lease *);
 void rewrite_client_leases(void);
-char *lease_as_string(struct client_lease *);
+void rewrite_option_db(struct client_lease *, struct client_lease *);
+char *lease_as_string(char *, struct client_lease *);
 
 struct client_lease *packet_to_lease(struct in_addr, struct option_data *);
 void go_daemon(void);
@@ -307,7 +311,7 @@ void assemble_udp_ip_header(unsigned char *, int *, u_int32_t, u_int32_t,
     unsigned int, unsigned char *, int);
 ssize_t decode_hw_header(unsigned char *, int, struct hardware *);
 ssize_t decode_udp_ip_header(unsigned char *, int, struct sockaddr_in *,
-    unsigned char *, int);
+    int);
 
 /* clparse.c */
 int read_client_conf(void);
@@ -327,6 +331,6 @@ void delete_address(char *, int, struct in_addr);
 
 void add_address(char *, int, struct in_addr, struct in_addr);
 
-void flush_routes_and_arp_cache(int);
+void flush_routes_and_arp_cache(char *, int);
 
 void add_default_route(int, struct in_addr, struct in_addr);
