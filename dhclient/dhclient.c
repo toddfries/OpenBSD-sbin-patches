@@ -1,4 +1,4 @@
-/*	$OpenBSD: dhclient.c,v 1.225 2013/02/02 20:20:42 krw Exp $	*/
+/*	$OpenBSD: dhclient.c,v 1.233 2013/02/15 19:52:38 krw Exp $	*/
 
 /*
  * Copyright 2004 Henning Brauer <henning@openbsd.org>
@@ -176,6 +176,7 @@ routehandler(void)
 	struct in_addr a, b;
 	ssize_t n;
 	int linkstat, rslt;
+	struct hardware hw;
 	struct rt_msghdr *rtm;
 	struct if_msghdr *ifm;
 	struct ifa_msghdr *ifam;
@@ -255,12 +256,20 @@ routehandler(void)
 		} 
 		goto die;
 	case RTM_IFINFO:
+		note("Got RTM_IFINFO");
 		ifm = (struct if_msghdr *)rtm;
 		if (ifm->ifm_index != ifi->index)
 			break;
 		if ((rtm->rtm_flags & RTF_UP) == 0) {
 			rslt = asprintf(&errmsg, "%s down", ifi->name);
 			goto die;
+		}
+
+		memcpy(&hw, &ifi->hw_address, sizeof(hw));
+		discover_interface();
+		if (memcmp(&hw, &ifi->hw_address, sizeof(hw))) {
+			quit = SIGHUP;
+			return;
 		}
 
 		linkstat =
@@ -462,6 +471,10 @@ main(int argc, char *argv[])
 	/* set up the interface */
 	discover_interface();
 
+	/* Register the interface... */
+	if_register_receive();
+	if_register_send();
+
 	if (socketpair(AF_UNIX, SOCK_STREAM, PF_UNSPEC, socket_fd) == -1)
 		error("socketpair: %s", strerror(errno));
 	socket_nonblockmode(socket_fd[0]);
@@ -582,14 +595,9 @@ state_reboot(void)
 		return;
 	}
 
-	/* make_request doesn't initialize xid because it normally comes
-	   from the DHCPDISCOVER, but we haven't sent a DHCPDISCOVER,
-	   so pick an xid now. */
 	client->xid = arc4random();
-
-	/* Make a DHCPREQUEST packet, and set appropriate per-interface
-	   flags. */
 	make_request(client->active);
+
 	client->destination.s_addr = INADDR_BROADCAST;
 	client->first_sending = time(NULL);
 	client->interval = 0;
@@ -604,10 +612,9 @@ state_reboot(void)
 void
 state_init(void)
 {
-	/* Make a DHCPDISCOVER packet, and set appropriate per-interface
-	   flags. */
+	client->xid = arc4random();
 	make_discover(client->active);
-	client->xid = client->packet.xid;
+
 	client->destination.s_addr = INADDR_BROADCAST;
 	client->state = S_SELECTING;
 	client->first_sending = time(NULL);
@@ -681,9 +688,12 @@ state_selecting(void)
 	client->first_sending = cur_time;
 	client->interval = 0;
 
-	/* Make a DHCPREQUEST packet from the lease we picked. */
+	/*
+	 * Make a DHCPREQUEST packet from the lease we picked. Keep
+	 * the current xid, as all offers should have had the same
+	 * one.
+	 */
 	make_request(picked);
-	client->xid = client->packet.xid;
 
 	/* Toss the lease we picked - we'll get it back in a DHCPACK. */
 	free_client_lease(picked);
@@ -830,8 +840,8 @@ void
 state_bound(void)
 {
 	/* T1 has expired. */
+	client->xid = arc4random();
 	make_request(client->active);
-	client->xid = client->packet.xid;
 
 	if (client->active->options[DHO_DHCP_SERVER_IDENTIFIER].len == 4) {
 		memcpy(&client->destination.s_addr,
@@ -1101,10 +1111,10 @@ send_discover(void)
 
 	/* Record the number of seconds since we started sending. */
 	if (interval < 65536)
-		client->packet.secs = htons(interval);
+		client->bootrequest_packet.secs = htons(interval);
 	else
-		client->packet.secs = htons(65535);
-	client->secs = client->packet.secs;
+		client->bootrequest_packet.secs = htons(65535);
+	client->secs = client->bootrequest_packet.secs;
 
 	note("DHCPDISCOVER on %s to %s port %d interval %d",
 	    ifi->name, inet_ntoa(sockaddr_broadcast.sin_addr),
@@ -1281,12 +1291,12 @@ send_request(void)
 
 	/* Record the number of seconds since we started sending. */
 	if (client->state == S_REQUESTING)
-		client->packet.secs = client->secs;
+		client->bootrequest_packet.secs = client->secs;
 	else {
 		if (interval < 65536)
-			client->packet.secs = htons(interval);
+			client->bootrequest_packet.secs = htons(interval);
 		else
-			client->packet.secs = htons(65535);
+			client->bootrequest_packet.secs = htons(65535);
 	}
 
 	note("DHCPREQUEST on %s to %s port %d", ifi->name,
@@ -1310,12 +1320,13 @@ send_decline(void)
 void
 make_discover(struct client_lease *lease)
 {
-	unsigned char discover = DHCPDISCOVER;
 	struct option_data options[256];
+	struct dhcp_packet *packet = &client->bootrequest_packet;
+	unsigned char discover = DHCPDISCOVER;
 	int i;
 
 	memset(options, 0, sizeof(options));
-	memset(&client->packet, 0, sizeof(client->packet));
+	memset(packet, 0, sizeof(*packet));
 
 	/* Set DHCP_MESSAGE_TYPE to DHCPDISCOVER */
 	i = DHO_DHCP_MESSAGE_TYPE;
@@ -1346,37 +1357,37 @@ make_discover(struct client_lease *lease)
 
 	/* Set up the option buffer to fit in a minimal UDP packet. */
 	i = cons_options(options);
-	if (i == -1 || client->packet.options[i] != DHO_END)
+	if (i == -1 || packet->options[i] != DHO_END)
 		error("options do not fit in DHCPDISCOVER packet.");
-	client->packet_length = DHCP_FIXED_NON_UDP+i+1;
-	if (client->packet_length < BOOTP_MIN_LEN)
-		client->packet_length = BOOTP_MIN_LEN;
+	client->bootrequest_packet_length = DHCP_FIXED_NON_UDP+i+1;
+	if (client->bootrequest_packet_length < BOOTP_MIN_LEN)
+		client->bootrequest_packet_length = BOOTP_MIN_LEN;
 
-	client->packet.op = BOOTREQUEST;
-	client->packet.htype = ifi->hw_address.htype;
-	client->packet.hlen = ifi->hw_address.hlen;
-	client->packet.hops = 0;
-	client->packet.xid = arc4random();
-	client->packet.secs = 0; /* filled in by send_discover. */
-	client->packet.flags = 0;
+	packet->op = BOOTREQUEST;
+	packet->htype = ifi->hw_address.htype;
+	packet->hlen = ifi->hw_address.hlen;
+	packet->hops = 0;
+	packet->xid = client->xid;
+	packet->secs = 0; /* filled in by send_discover. */
+	packet->flags = 0;
 
-	memset(&client->packet.ciaddr, 0, sizeof(client->packet.ciaddr));
-	memset(&client->packet.yiaddr, 0, sizeof(client->packet.yiaddr));
-	memset(&client->packet.siaddr, 0, sizeof(client->packet.siaddr));
-	memset(&client->packet.giaddr, 0, sizeof(client->packet.giaddr));
-	memcpy(client->packet.chaddr, ifi->hw_address.haddr,
-	    ifi->hw_address.hlen);
+	memset(&packet->ciaddr, 0, sizeof(packet->ciaddr));
+	memset(&packet->yiaddr, 0, sizeof(packet->yiaddr));
+	memset(&packet->siaddr, 0, sizeof(packet->siaddr));
+	memset(&packet->giaddr, 0, sizeof(packet->giaddr));
+	memcpy(&packet->chaddr, ifi->hw_address.haddr, ifi->hw_address.hlen);
 }
 
 void
 make_request(struct client_lease * lease)
 {
-	unsigned char request = DHCPREQUEST;
 	struct option_data options[256];
+	struct dhcp_packet *packet = &client->bootrequest_packet;
+	unsigned char request = DHCPREQUEST;
 	int i;
 
 	memset(options, 0, sizeof(options));
-	memset(&client->packet, 0, sizeof(client->packet));
+	memset(packet, 0, sizeof(*packet));
 
 	/* Set DHCP_MESSAGE_TYPE to DHCPREQUEST */
 	i = DHO_DHCP_MESSAGE_TYPE;
@@ -1413,48 +1424,47 @@ make_request(struct client_lease * lease)
 
 	/* Set up the option buffer to fit in a minimal UDP packet. */
 	i = cons_options(options);
-	if (i == -1 || client->packet.options[i] != DHO_END)
+	if (i == -1 || packet->options[i] != DHO_END)
 		error("options do not fit in DHCPREQUEST packet.");
-	client->packet_length = DHCP_FIXED_NON_UDP+i+1;
-	if (client->packet_length < BOOTP_MIN_LEN)
-		client->packet_length = BOOTP_MIN_LEN;
+	client->bootrequest_packet_length = DHCP_FIXED_NON_UDP+i+1;
+	if (client->bootrequest_packet_length < BOOTP_MIN_LEN)
+		client->bootrequest_packet_length = BOOTP_MIN_LEN;
 
-	client->packet.op = BOOTREQUEST;
-	client->packet.htype = ifi->hw_address.htype;
-	client->packet.hlen = ifi->hw_address.hlen;
-	client->packet.hops = 0;
-	client->packet.xid = client->xid;
-	client->packet.secs = 0; /* Filled in by send_request. */
-	client->packet.flags = 0;
+	packet->op = BOOTREQUEST;
+	packet->htype = ifi->hw_address.htype;
+	packet->hlen = ifi->hw_address.hlen;
+	packet->hops = 0;
+	packet->xid = client->xid;
+	packet->secs = 0; /* Filled in by send_request. */
+	packet->flags = 0;
 
 	/* If we own the address we're requesting, put it in ciaddr;
 	   otherwise set ciaddr to zero. */
 	if (client->state == S_BOUND ||
 	    client->state == S_RENEWING ||
 	    client->state == S_REBINDING) {
-		memcpy(&client->packet.ciaddr, &lease->address.s_addr,
+		memcpy(&packet->ciaddr, &lease->address.s_addr,
 		    sizeof(in_addr_t));
 	} else {
-		memset(&client->packet.ciaddr, 0,
-		    sizeof(client->packet.ciaddr));
+		memset(&packet->ciaddr, 0, sizeof(packet->ciaddr));
 	}
 
-	memset(&client->packet.yiaddr, 0, sizeof(client->packet.yiaddr));
-	memset(&client->packet.siaddr, 0, sizeof(client->packet.siaddr));
-	memset(&client->packet.giaddr, 0, sizeof(client->packet.giaddr));
-	memcpy(client->packet.chaddr, ifi->hw_address.haddr,
-	    ifi->hw_address.hlen);
+	memset(&packet->yiaddr, 0, sizeof(packet->yiaddr));
+	memset(&packet->siaddr, 0, sizeof(packet->siaddr));
+	memset(&packet->giaddr, 0, sizeof(packet->giaddr));
+	memcpy(&packet->chaddr, ifi->hw_address.haddr, ifi->hw_address.hlen);
 }
 
 void
 make_decline(struct client_lease *lease)
 {
 	struct option_data options[256];
+	struct dhcp_packet *packet = &client->bootrequest_packet;
 	unsigned char decline = DHCPDECLINE;
 	int i;
 
 	memset(options, 0, sizeof(options));
-	memset(&client->packet, 0, sizeof(client->packet));
+	memset(packet, 0, sizeof(*packet));
 
 	/* Set DHCP_MESSAGE_TYPE to DHCPDECLINE */
 	i = DHO_DHCP_MESSAGE_TYPE;
@@ -1480,27 +1490,26 @@ make_decline(struct client_lease *lease)
 
 	/* Set up the option buffer to fit in a minimal UDP packet. */
 	i = cons_options(options);
-	if (i == -1 || client->packet.options[i] != DHO_END)
+	if (i == -1 || packet->options[i] != DHO_END)
 		error("options do not fit in DHCPDECLINE packet.");
-	client->packet_length = DHCP_FIXED_NON_UDP+i+1;
-	if (client->packet_length < BOOTP_MIN_LEN)
-		client->packet_length = BOOTP_MIN_LEN;
+	client->bootrequest_packet_length = DHCP_FIXED_NON_UDP+i+1;
+	if (client->bootrequest_packet_length < BOOTP_MIN_LEN)
+		client->bootrequest_packet_length = BOOTP_MIN_LEN;
 
-	client->packet.op = BOOTREQUEST;
-	client->packet.htype = ifi->hw_address.htype;
-	client->packet.hlen = ifi->hw_address.hlen;
-	client->packet.hops = 0;
-	client->packet.xid = client->xid;
-	client->packet.secs = 0; /* Filled in by send_request. */
-	client->packet.flags = 0;
+	packet->op = BOOTREQUEST;
+	packet->htype = ifi->hw_address.htype;
+	packet->hlen = ifi->hw_address.hlen;
+	packet->hops = 0;
+	packet->xid = client->xid;
+	packet->secs = 0; /* Filled in by send_request. */
+	packet->flags = 0;
 
 	/* ciaddr must always be zero. */
-	memset(&client->packet.ciaddr, 0, sizeof(client->packet.ciaddr));
-	memset(&client->packet.yiaddr, 0, sizeof(client->packet.yiaddr));
-	memset(&client->packet.siaddr, 0, sizeof(client->packet.siaddr));
-	memset(&client->packet.giaddr, 0, sizeof(client->packet.giaddr));
-	memcpy(client->packet.chaddr, ifi->hw_address.haddr,
-	    ifi->hw_address.hlen);
+	memset(&packet->ciaddr, 0, sizeof(packet->ciaddr));
+	memset(&packet->yiaddr, 0, sizeof(packet->yiaddr));
+	memset(&packet->siaddr, 0, sizeof(packet->siaddr));
+	memset(&packet->giaddr, 0, sizeof(packet->giaddr));
+	memcpy(&packet->chaddr, ifi->hw_address.haddr, ifi->hw_address.hlen);
 }
 
 void
@@ -1844,7 +1853,12 @@ fork_privchld(int fd, int fd2)
 	imsg.rdomain = ifi->rdomain;
 	imsg.addr = active_addr;
 
-	priv_cleanup(&imsg);
+	/*
+	 * SIGTERM is used by system at shut down. Be nice and don't cleanup
+	 * routes, possibly preventing NFS from properly shutting down.
+	 */
+	if (quit != SIGTERM)
+		priv_cleanup(&imsg);
 
 	if (quit == SIGHUP) {
 		warning("Received SIGHUP; restarting.");
@@ -2168,13 +2182,10 @@ apply_ignore_list(char *ignore_list)
 		}
 
 		/* Avoid storing duplicate options in the list. */
-		for (j = 0; j < ix; j++) {
-			if (list[j] == i) {
-				note("Duplicate option name: '%s'", p);
-				return;
-			}
-		}
-		list[ix++] = i;
+		for (j = 0; j < ix && list[j] != i; j++)
+			;
+		if (j == ix)
+			list[ix++] = i;
 	}
 
 	config->ignored_option_count = ix;

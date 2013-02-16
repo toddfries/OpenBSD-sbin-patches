@@ -1,4 +1,4 @@
-/*	$OpenBSD: dispatch.c,v 1.70 2013/01/18 06:05:54 krw Exp $	*/
+/*	$OpenBSD: dispatch.c,v 1.72 2013/02/14 22:18:12 krw Exp $	*/
 
 /*
  * Copyright 2004 Henning Brauer <henning@openbsd.org>
@@ -97,9 +97,6 @@ discover_interface(void)
 	if (!ifi->ifp)
 		error("%s: not found", ifi->name);
 
-	/* Register the interface... */
-	if_register_receive();
-	if_register_send();
 	freeifaddrs(ifap);
 }
 
@@ -122,7 +119,7 @@ dispatch(void)
 another:
 		if (!ifi) {
 			warning("No interfaces available");
-			quit = SIGTERM;
+			quit = SIGQUIT;
 			continue;
 		}
 
@@ -130,7 +127,7 @@ another:
 			warning("Interface %s:"
 			    " rdomain changed out from under us",
 			    ifi->name);
-			quit = SIGTERM;
+			quit = SIGQUIT;
 			continue;
 		}
 
@@ -158,7 +155,7 @@ another:
 		/* Set up the descriptors to be polled. */
 		if (!ifi || ifi->rfdesc == -1) {
 			warning("No live interface to poll on");
-			quit = SIGTERM;
+			quit = SIGQUIT;
 			continue;
 		}
 
@@ -179,7 +176,7 @@ another:
 				continue;
 			} else {
 				warning("poll: %s", strerror(errno));
-				quit = SIGTERM;
+				quit = SIGQUIT;
 				continue;
 			}
 		}
@@ -195,18 +192,22 @@ another:
 		if (fds[2].revents & POLLOUT) {
 			if (msgbuf_write(&unpriv_ibuf->w) == -1) {
 				warning("pipe write error to [priv]");
-				quit = SIGTERM;
+				quit = SIGQUIT;
 				continue;
 			}
 		}
 		if ((fds[2].revents & (POLLIN | POLLHUP))) {
 			warning("lost connection to [priv]");
-			quit = SIGTERM;
+			quit = SIGQUIT;
 			continue;
 		}
 	}
 
-	if (client->active)
+	/*
+	 * SIGTERM is used by system at shut down. Be nice and don't cleanup
+	 * routes, thus possibly preventing NFS from properly shutting down.
+	 */
+	if (client->active && quit != SIGTERM)
 		cleanup(client->active);
 
 	if (quit == SIGHUP)
