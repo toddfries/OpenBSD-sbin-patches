@@ -1,4 +1,4 @@
-/*	$OpenBSD: dhclient.c,v 1.233 2013/02/15 19:52:38 krw Exp $	*/
+/*	$OpenBSD: dhclient.c,v 1.240 2013/02/27 17:25:59 krw Exp $	*/
 
 /*
  * Copyright 2004 Henning Brauer <henning@openbsd.org>
@@ -172,7 +172,6 @@ get_ifa(char *cp, int n)
 void
 routehandler(void)
 {
-	char msg[2048];
 	struct in_addr a, b;
 	ssize_t n;
 	int linkstat, rslt;
@@ -182,16 +181,20 @@ routehandler(void)
 	struct ifa_msghdr *ifam;
 	struct if_announcemsghdr *ifan;
 	struct sockaddr *sa;
-	char *errmsg;
+	char *errmsg, *rtmmsg;
+
+	rtmmsg = calloc(1, 2048);
+	if (rtmmsg == NULL)
+		error("No memory for rtmmsg");
 
 	do {
-		n = read(routefd, &msg, sizeof(msg));
+		n = read(routefd, rtmmsg, 2048);
 	} while (n == -1 && errno == EINTR);
 
-	rtm = (struct rt_msghdr *)msg;
+	rtm = (struct rt_msghdr *)rtmmsg;
 	if (n < sizeof(rtm->rtm_msglen) || n < rtm->rtm_msglen ||
 	    rtm->rtm_version != RTM_VERSION)
-		return;
+		goto done;
 
 	switch (rtm->rtm_type) {
 	case RTM_NEWADDR:
@@ -242,8 +245,11 @@ routehandler(void)
 			if (adding.s_addr == INADDR_ANY && client->active &&
 			    a.s_addr == client->active->address.s_addr) {
 				/* Tell the priv process active_addr is gone. */
+				warning("Active address (%s) deleted; exiting",
+				    inet_ntoa(client->active->address));
 				memset(&b, 0, sizeof(b));
 				add_address(ifi->name, 0, b, b);
+				quit = INTERNALSIG;
 				break;
 			}
 			if (deleting.s_addr != INADDR_ANY)
@@ -256,7 +262,6 @@ routehandler(void)
 		} 
 		goto die;
 	case RTM_IFINFO:
-		note("Got RTM_IFINFO");
 		ifm = (struct if_msghdr *)rtm;
 		if (ifm->ifm_index != ifi->index)
 			break;
@@ -268,8 +273,10 @@ routehandler(void)
 		memcpy(&hw, &ifi->hw_address, sizeof(hw));
 		discover_interface();
 		if (memcmp(&hw, &ifi->hw_address, sizeof(hw))) {
+			warning("LLADDR changed; restarting");
+			ifi->flags |= IFI_NEW_LLADDR;
 			quit = SIGHUP;
-			return;
+			goto done;
 		}
 
 		linkstat =
@@ -284,6 +291,9 @@ routehandler(void)
 			if (ifi->linkstat) {
 				client->state = S_REBOOTING;
 				state_reboot();
+			} else {
+				/* No need to wait for anything but link. */
+				cancel_timeout();
 			}
 		}
 		break;
@@ -307,13 +317,14 @@ routehandler(void)
 		    client->active->resolv_conf,
 		    strlen(client->active->resolv_conf));
 
+done:
+	free(rtmmsg);
 	return;
 
 die:
 	if (rslt == -1)
 		error("no memory for errmsg");
-	error("routehandler: %s", errmsg);
-	free(errmsg);
+	error("%s; exiting", errmsg);
 }
 
 char **saved_argv;
@@ -407,6 +418,9 @@ main(int argc, char *argv[])
 
 	/* Put us into the correct rdomain */
 	ifi->rdomain = get_rdomain(ifi->name);
+	if (setrtable(ifi->rdomain) == -1)
+		error("setting routing table to %d: '%s'", ifi->rdomain,
+		    strerror(errno));
 
 	read_client_conf();
 	if (ignore_list)
@@ -653,11 +667,12 @@ state_selecting(void)
 	}
 	client->offered_leases = NULL;
 
-	/* If we just tossed all the leases we were offered, go back
-	   to square one. */
+	/*
+	 * If we just tossed all the leases we were offered, go back
+	 *  to square one.
+	 */
 	if (!picked) {
-		client->state = S_INIT;
-		state_init();
+		state_panic();
 		return;
 	}
 
@@ -1138,7 +1153,7 @@ state_panic(void)
 	time_t cur_time;
 
 	time(&cur_time);
-	note("No DHCPOFFERS received.");
+	note("No acceptable DHCPOFFERS received.");
 
 	/* We may not have an active lease, but we may have some
 	   predefined leases that we can try. */
@@ -1781,7 +1796,7 @@ toobig:
 void
 fork_privchld(int fd, int fd2)
 {
-	struct imsg_cleanup imsg;
+	struct imsg_hup imsg;
 	struct pollfd pfd[1];
 	struct imsgbuf *priv_ibuf;
 	ssize_t n;
@@ -1817,7 +1832,7 @@ fork_privchld(int fd, int fd2)
 		if ((nfds = poll(pfd, 1, INFTIM)) == -1) {
 			if (errno != EINTR) {
 				warning("poll error: %s", strerror(errno));
-				break;
+				quit = INTERNALSIG;
 			}
 			continue;
 		} 
@@ -1827,12 +1842,14 @@ fork_privchld(int fd, int fd2)
 
 		if ((n = imsg_read(priv_ibuf)) == -1) {
 			warning("imsg_read(priv_ibuf): %s", strerror(errno));
-			break;
+			quit = INTERNALSIG;
+			continue;
 		}
 
-		if (n == 0) {	/* connection closed */
-			warning("dispatch_imsg in main: pipe closed");
-			break;
+		if (n == 0) {
+			/* Connection closed -- other end should log message. */
+			quit = INTERNALSIG;
+			continue;
 		}
 
 		dispatch_imsg(priv_ibuf);
@@ -1848,26 +1865,31 @@ fork_privchld(int fd, int fd2)
 			    path_option_db, strerror(errno));
 	}
 
-	memset(&imsg, 0, sizeof(imsg));
-	strlcpy(imsg.ifname, ifi->name, sizeof(imsg.ifname));
-	imsg.rdomain = ifi->rdomain;
-	imsg.addr = active_addr;
-
 	/*
 	 * SIGTERM is used by system at shut down. Be nice and don't cleanup
 	 * routes, possibly preventing NFS from properly shutting down.
 	 */
-	if (quit != SIGTERM)
+	if (quit != SIGTERM) {
+		memset(&imsg, 0, sizeof(imsg));
+		strlcpy(imsg.ifname, ifi->name, sizeof(imsg.ifname));
+		imsg.rdomain = ifi->rdomain;
+		imsg.addr = active_addr;
 		priv_cleanup(&imsg);
+	}
 
 	if (quit == SIGHUP) {
-		warning("Received SIGHUP; restarting.");
+		if (!(ifi->flags & IFI_HUP) &&
+		   (!(ifi->flags & IFI_NEW_LLADDR)))
+			warning("%s; restarting.", strsignal(quit));
 		signal(SIGHUP, SIG_IGN); /* will be restored after exec */
 		execvp(saved_argv[0], saved_argv);
 		error("RESTART FAILED: '%s': %s", saved_argv[0],
 		    strerror(errno));
 	}
 
+	if (quit != INTERNALSIG)
+		warning("%s; exiting", strsignal(quit));
+ 
 	exit(1);
 }
 

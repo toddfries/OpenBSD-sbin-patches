@@ -1,4 +1,4 @@
-/*	$OpenBSD: dhcpd.h,v 1.109 2013/02/14 20:39:46 krw Exp $	*/
+/*	$OpenBSD: dhcpd.h,v 1.111 2013/02/18 15:57:08 krw Exp $	*/
 
 /*
  * Copyright (c) 2004 Henning Brauer <henning@openbsd.org>
@@ -72,6 +72,7 @@
 
 #define	LOCAL_PORT	68
 #define	REMOTE_PORT	67
+#define	INTERNALSIG	INT_MAX
 
 struct option {
 	char *name;
@@ -180,6 +181,9 @@ struct interface_info {
 	u_int16_t	 index;
 	int		 linkstat;
 	int		 rdomain;
+	int		 flags;
+#define IFI_NEW_LLADDR	0x00000001
+#define IFI_HUP		0x00000002
 };
 
 struct dhcp_timeout {
@@ -304,7 +308,7 @@ void go_daemon(void);
 
 void routehandler(void);
 
-void cleanup(struct client_lease *);
+void sendhup(struct client_lease *);
 
 /* packet.c */
 void assemble_hw_header(unsigned char *, int *, struct hardware *);

@@ -1,4 +1,4 @@
-/*	$OpenBSD: dispatch.c,v 1.72 2013/02/14 22:18:12 krw Exp $	*/
+/*	$OpenBSD: dispatch.c,v 1.75 2013/02/18 15:57:08 krw Exp $	*/
 
 /*
  * Copyright 2004 Henning Brauer <henning@openbsd.org>
@@ -119,7 +119,7 @@ dispatch(void)
 another:
 		if (!ifi) {
 			warning("No interfaces available");
-			quit = SIGQUIT;
+			quit = INTERNALSIG;
 			continue;
 		}
 
@@ -127,7 +127,7 @@ another:
 			warning("Interface %s:"
 			    " rdomain changed out from under us",
 			    ifi->name);
-			quit = SIGQUIT;
+			quit = INTERNALSIG;
 			continue;
 		}
 
@@ -155,7 +155,7 @@ another:
 		/* Set up the descriptors to be polled. */
 		if (!ifi || ifi->rfdesc == -1) {
 			warning("No live interface to poll on");
-			quit = SIGQUIT;
+			quit = INTERNALSIG;
 			continue;
 		}
 
@@ -176,7 +176,7 @@ another:
 				continue;
 			} else {
 				warning("poll: %s", strerror(errno));
-				quit = SIGQUIT;
+				quit = INTERNALSIG;
 				continue;
 			}
 		}
@@ -192,28 +192,26 @@ another:
 		if (fds[2].revents & POLLOUT) {
 			if (msgbuf_write(&unpriv_ibuf->w) == -1) {
 				warning("pipe write error to [priv]");
-				quit = SIGQUIT;
+				quit = INTERNALSIG;
 				continue;
 			}
 		}
 		if ((fds[2].revents & (POLLIN | POLLHUP))) {
-			warning("lost connection to [priv]");
-			quit = SIGQUIT;
+			/* Pipe to [priv] closed. Assume it emitted error. */
+			quit = INTERNALSIG;
 			continue;
 		}
 	}
 
-	/*
-	 * SIGTERM is used by system at shut down. Be nice and don't cleanup
-	 * routes, thus possibly preventing NFS from properly shutting down.
-	 */
-	if (client->active && quit != SIGTERM)
-		cleanup(client->active);
-
-	if (quit == SIGHUP)
-		exit(0);
-
-	exit(1);
+	if (quit == SIGHUP) {
+		/* Tell [priv] process that HUP has occurred. */
+		sendhup(client->active);
+		warning("%s; restarting", strsignal(quit));
+		exit (0);
+	} else if (quit != INTERNALSIG) {
+		warning("%s; exiting", strsignal(quit));
+		exit(1);
+	}
 }
 
 void
