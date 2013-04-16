@@ -1,4 +1,4 @@
-/*	$OpenBSD: dhcpd.h,v 1.111 2013/02/18 15:57:08 krw Exp $	*/
+/*	$OpenBSD: dhcpd.h,v 1.113 2013/04/05 19:19:05 krw Exp $	*/
 
 /*
  * Copyright (c) 2004 Henning Brauer <henning@openbsd.org>
@@ -209,7 +209,7 @@ extern volatile sig_atomic_t quit;
 /* options.c */
 int cons_options(struct option_data *);
 char *pretty_print_option(unsigned int, struct option_data *, int);
-void do_packet(int, unsigned int, struct in_addr, struct hardware *);
+void do_packet(unsigned int, struct in_addr, struct hardware *);
 
 /* errwarn.c */
 extern int warnings_occurred;
@@ -336,6 +336,6 @@ void delete_address(char *, int, struct in_addr);
 
 void add_address(char *, int, struct in_addr, struct in_addr);
 
-void flush_routes_and_arp_cache(char *, int);
+void flush_routes(char *, int);
 
 void add_default_route(int, struct in_addr, struct in_addr);

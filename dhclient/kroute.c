@@ -1,4 +1,4 @@
-/*	$OpenBSD: kroute.c,v 1.44 2013/03/13 16:28:05 weerd Exp $	*/
+/*	$OpenBSD: kroute.c,v 1.47 2013/03/30 16:10:01 krw Exp $	*/
 
 /*
  * Copyright 2012 Kenneth R Westerback <krw@openbsd.org>
@@ -33,6 +33,7 @@ struct in_addr active_addr;
 int	create_route_label(struct sockaddr_rtlabel *);
 int	check_route_label(struct sockaddr_rtlabel *);
 void	populate_rti_info(struct sockaddr **, struct rt_msghdr *);
+void	delete_route(int, int, struct rt_msghdr *);
 
 #define	ROUTE_LABEL_NONE		1
 #define	ROUTE_LABEL_NOT_DHCLIENT	2
@@ -48,7 +49,7 @@ void	populate_rti_info(struct sockaddr **, struct rt_msghdr *);
  *	arp -dan
  */
 void
-flush_routes_and_arp_cache(char *ifname, int rdomain)
+flush_routes(char *ifname, int rdomain)
 {
 	struct imsg_flush_routes imsg;
 	int			 rslt;
@@ -62,64 +63,63 @@ flush_routes_and_arp_cache(char *ifname, int rdomain)
 	rslt = imsg_compose(unpriv_ibuf, IMSG_FLUSH_ROUTES, 0, 0, -1,
 	    &imsg, sizeof(imsg));
 	if (rslt == -1)
-		warning("flush_routes_and_arp_cache: imsg_compose: %s",
-		    strerror(errno));
+		warning("flush_routes: imsg_compose: %s", strerror(errno));
 
 	/* Do flush to maximize chances of cleaning up routes on exit. */
 	rslt = imsg_flush(unpriv_ibuf);
 	if (rslt == -1)
-		warning("flush_routes_and_arp_cache: imsg_flush: %s",
-		    strerror(errno));
+		warning("flush_routes: imsg_flush: %s", strerror(errno));
 }
 
 void
-priv_flush_routes_and_arp_cache(struct imsg_flush_routes *imsg)
+priv_flush_routes(struct imsg_flush_routes *imsg)
 {
 	char ifname[IF_NAMESIZE];
 	struct sockaddr *rti_info[RTAX_MAX];
 	int mib[7];
 	size_t needed;
-	char *lim, *buf, *next, *errmsg;
+	char *lim, *buf = NULL, *bufp, *next, *errmsg = NULL;
 	struct rt_msghdr *rtm;
-	struct sockaddr *sa;
-	struct sockaddr_dl *sdl;
 	struct sockaddr_in *sa_in;
 	struct sockaddr_rtlabel *sa_rl;
-	int s, seqno = 0, rlen, retry;
+	int s;
 
 	mib[0] = CTL_NET;
 	mib[1] = PF_ROUTE;
 	mib[2] = 0;
-	mib[3] = 0;
-	mib[4] = NET_RT_DUMP;
-	mib[5] = 0;
+	mib[3] = AF_INET;
+	mib[4] = NET_RT_FLAGS;
+	mib[5] = RTF_GATEWAY;
 	mib[6] = imsg->rdomain;
 
-	buf = NULL;
-	retry = 0;
-	do {
-		retry++;
-		errmsg = NULL;
-		if (buf)
-			free(buf);
+	while (1) {
 		if (sysctl(mib, 7, NULL, &needed, NULL, 0) == -1) {
 			errmsg = "sysctl size of routes:";
-			continue;
+			break;
 		}
-		if (needed == 0)
+		if (needed == 0) {
+			free(buf);
 			return;
-		if ((buf = malloc(needed)) == NULL) {
+		}
+		if ((bufp = realloc(buf, needed)) == NULL) {
+			free(buf);
 			errmsg = "routes buf malloc:";
 			continue;
 		}
+		buf = bufp;
 		if (sysctl(mib, 7, buf, &needed, NULL, 0) == -1) {
+			if (errno == ENOMEM)
+				continue;
+			free(buf);
 			errmsg = "sysctl retrieval of routes:";
+			break;
 		}
-	} while (retry < 10 && errmsg != NULL);
+		break;
+	}
 
 	if (errmsg) {
-		warning("route cleanup failed - %s %s (%d retries, msize=%zu)",
-		    errmsg, strerror(errno), retry, needed);
+		warning("route cleanup failed - %s %s (msize=%zu)",
+		    errmsg, strerror(errno), needed);
 		return;
 	}
 
@@ -132,85 +132,38 @@ priv_flush_routes_and_arp_cache(struct imsg_flush_routes *imsg)
 		if (rtm->rtm_version != RTM_VERSION)
 			continue;
 
-		sa = (struct sockaddr *)(next + rtm->rtm_hdrlen);
-		if (sa->sa_family == AF_KEY || sa->sa_family == AF_INET6)
-			continue;  /* Don't flush SPD or INET6 routes */
-
 		populate_rti_info(rti_info, rtm);
 
 		sa_rl = (struct sockaddr_rtlabel *)rti_info[RTAX_LABEL];
+		sa_in = (struct sockaddr_in *)rti_info[RTAX_NETMASK];
+
 		switch (check_route_label(sa_rl)) {
 		case ROUTE_LABEL_DHCLIENT_OURS:
 			/* Always delete routes we labeled. */
-			goto delete;
+			delete_route(s, imsg->rdomain, rtm);
+			break;;
 		case ROUTE_LABEL_DHCLIENT_DEAD:
 			if (imsg->zapzombies)
-				goto delete;
-			continue;
+				delete_route(s, imsg->rdomain, rtm);
+			break;
 		case ROUTE_LABEL_DHCLIENT_LIVE:
 		case ROUTE_LABEL_DHCLIENT_UNKNOWN:
-			/* Never delete routes labelled by another dhclient. */
-			continue;
-		default:
+			/* Another dhclient's responsibility. */
 			break;
-		}
-
-		if (rtm->rtm_flags & RTF_LLINFO) {
-			if (rtm->rtm_flags & RTF_GATEWAY)
-				continue;
-			if (rtm->rtm_flags & RTF_PERMANENT_ARP)
-				continue;
-			sdl = (struct sockaddr_dl *)rti_info[RTAX_GATEWAY];
-			if (sdl == NULL)
-				continue;
-
-			/* XXXX Check for AF_INET too? (arp ask for them) */
-			/* XXXX Need 'retry' for proxy entries? (arp does) */
-
-			if (sdl->sdl_family == AF_LINK) {
-				switch (sdl->sdl_type) {
-				case IFT_ETHER:
-				case IFT_FDDI:
-				case IFT_ISO88023:
-				case IFT_ISO88024:
-				case IFT_ISO88025:
-				case IFT_CARP:
-					/* Delete it. */
-					goto delete;
-				default:
-					break;
-				}
-			}
-			continue;
-		}
-
-		if (rtm->rtm_flags & RTF_GATEWAY) {
+		case ROUTE_LABEL_NONE:
+		case ROUTE_LABEL_NOT_DHCLIENT:
+			/* Delete default routes on our interface. */
 			memset(ifname, 0, sizeof(ifname));
-			if (if_indextoname(rtm->rtm_index, ifname) == NULL)
-				continue;
-			sa_in = (struct sockaddr_in *)rti_info[RTAX_NETMASK];
-			if (sa_in && 
+			if (if_indextoname(rtm->rtm_index, ifname) &&
+			    sa_in && 
 			    sa_in->sin_addr.s_addr == INADDR_ANY &&
 			    rtm->rtm_tableid == imsg->rdomain &&
 			    strcmp(imsg->ifname, ifname) == 0)
-				goto delete;
+				delete_route(s, imsg->rdomain, rtm);
+			break;
+		default:
+			break;
 		}
-
-		continue;
-
-delete:
-		rtm->rtm_type = RTM_DELETE;
-		rtm->rtm_seq = seqno;
-		rtm->rtm_tableid = imsg->rdomain;
-
-		rlen = write(s, next, rtm->rtm_msglen);
-		if (rlen == -1) {
-			if (errno != ESRCH)
-				error("RTM_DELETE write: %s", strerror(errno));
-		} else if (rlen < (int)rtm->rtm_msglen)
-			error("short RTM_DELETE write (%d)\n", rlen);
-
-		seqno++;
 	}
 
 	close(s);
@@ -632,7 +585,7 @@ priv_cleanup(struct imsg_hup *imsg)
 	memset(&fimsg, 0, sizeof(fimsg));
 	fimsg.rdomain = imsg->rdomain;
 	fimsg.zapzombies = 0;	/* Only zapzombies when binding a lease. */
-	priv_flush_routes_and_arp_cache(&fimsg);
+	priv_flush_routes(&fimsg);
 
 	if (imsg->addr.s_addr == INADDR_ANY)
 		return;
@@ -814,4 +767,22 @@ populate_rti_info(struct sockaddr **rti_info, struct rt_msghdr *rtm)
 		} else
 			rti_info[i] = NULL;
 	}
+}
+
+void
+delete_route(int s, int rdomain, struct rt_msghdr *rtm)
+{
+	static int seqno;
+	int rlen;
+
+	rtm->rtm_type = RTM_DELETE;
+	rtm->rtm_tableid = rdomain;
+	rtm->rtm_seq = seqno++;
+
+	rlen = write(s, (char *)rtm, rtm->rtm_msglen);
+	if (rlen == -1) {
+		if (errno != ESRCH)
+			error("RTM_DELETE write: %s", strerror(errno));
+	} else if (rlen < (int)rtm->rtm_msglen)
+		error("short RTM_DELETE write (%d)\n", rlen);
 }

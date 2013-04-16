@@ -1,4 +1,4 @@
-/*	$OpenBSD: cmd.c,v 1.58 2012/07/11 10:27:34 krw Exp $	*/
+/*	$OpenBSD: cmd.c,v 1.60 2013/03/21 18:45:58 deraadt Exp $	*/
 
 /*
  * Copyright (c) 1997 Tobias Weingartner
@@ -25,6 +25,9 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include <sys/types.h>
+#include <sys/fcntl.h>
+#include <sys/disklabel.h>
 #include <err.h>
 #include <errno.h>
 #include <stdio.h>
@@ -33,15 +36,12 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <signal.h>
-#include <sys/fcntl.h>
-#include <sys/disklabel.h>
 #include <limits.h>
 #include "disk.h"
 #include "misc.h"
 #include "user.h"
 #include "part.h"
 #include "cmd.h"
-#define MAX(a, b) ((a) >= (b) ? (a) : (b))
 
 int
 Xreinit(cmd_t *cmd, disk_t *disk, mbr_t *mbr, mbr_t *tt, int offset)

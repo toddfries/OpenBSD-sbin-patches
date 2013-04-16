@@ -1,4 +1,4 @@
-/*	$OpenBSD: dhclient.c,v 1.240 2013/02/27 17:25:59 krw Exp $	*/
+/*	$OpenBSD: dhclient.c,v 1.242 2013/03/30 16:10:01 krw Exp $	*/
 
 /*
  * Copyright 2004 Henning Brauer <henning@openbsd.org>
@@ -796,8 +796,9 @@ bind_lease(void)
 	struct option_data *options;
 	struct client_lease *lease;
 
+	/* Deleting the addresses also clears out arp entries. */
 	delete_addresses(ifi->name, ifi->rdomain);
-	flush_routes_and_arp_cache(ifi->name, ifi->rdomain);
+	flush_routes(ifi->name, ifi->rdomain);
 
 	lease = apply_defaults(client->new);
 	options = lease->options;
@@ -1622,6 +1623,7 @@ char *
 lease_as_string(char *type, struct client_lease *lease)
 {
 	static char leasestr[8192];
+	struct option_data *opt;
 	char *p;
 	size_t sz, rsltsz;
 	int i, rslt;
@@ -1656,11 +1658,16 @@ lease_as_string(char *type, struct client_lease *lease)
 	}
 
 	for (i = 0; i < 256; i++) {
-		if (lease->options[i].len == 0)
+		if (i == DHO_DHCP_CLIENT_IDENTIFIER) {
+			/* Ignore any CLIENT_IDENTIFIER from server. */
+			opt = &config->send_options[i];
+		} else if (lease->options[i].len)
+			opt = &lease->options[i];
+		else
 			continue;
+
 		rslt = snprintf(p, sz, "  option %s %s;\n",
-		    dhcp_options[i].name,
-		    pretty_print_option(i, &lease->options[i], 1));
+		    dhcp_options[i].name, pretty_print_option(i, opt,  1));
 		if (rslt == -1 || rslt >= sz)
 			return (NULL);
 		p += rslt;
