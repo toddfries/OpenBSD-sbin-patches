@@ -1,4 +1,4 @@
-/*	$OpenBSD: fsdb.c,v 1.24 2013/04/16 19:25:49 deraadt Exp $	*/
+/*	$OpenBSD: fsdb.c,v 1.27 2013/04/25 06:43:20 otto Exp $	*/
 /*	$NetBSD: fsdb.c,v 1.7 1997/01/11 06:50:53 lukem Exp $	*/
 
 /*-
@@ -66,7 +66,7 @@ static int scannames(struct inodesc *);
 static int dolookup(char *);
 static int chinumfunc(struct inodesc *);
 static int chnamefunc(struct inodesc *);
-static int dotime(char *, int32_t *, int32_t *);
+static int dotime(char *, time_t *, int32_t *);
 
 int returntosingle = 0;
 union dinode *curinode;
@@ -202,7 +202,8 @@ prompt(EditLine *el)
 {
 	static char pstring[64];
 
-	snprintf(pstring, sizeof(pstring), "fsdb (inum: %d)> ", curinum);
+	snprintf(pstring, sizeof(pstring), "fsdb (inum: %llu)> ",
+	    (unsigned long long)curinum);
 	return pstring;
 }
 
@@ -283,10 +284,11 @@ cmdloop(void)
 
 static ino_t ocurrent;
 
-#define GETINUM(ac,inum)    inum = strtoul(argv[ac], &cp, 0); \
+#define GETINUM(ac,inum)    inum = strtoull(argv[ac], &cp, 0); \
 	if (inum < ROOTINO || inum > maxino || cp == argv[ac] || *cp != '\0' ) { \
-		printf("inode %d out of range; range is [%d,%d]\n", \
-		    inum, ROOTINO, maxino); \
+		printf("inode %llu out of range; range is [%llu,%llu]\n", \
+		    (unsigned long long)inum, (unsigned long long)ROOTINO, \
+		    (unsigned long long)maxino); \
 		return 1; \
 	}
 
@@ -346,7 +348,8 @@ CMDFUNCSTART(uplink)
 	if (!checkactive())
 		return 1;
 	DIP_SET(curinode, di_nlink, DIP(curinode, di_nlink) + 1);
-	printf("inode %d link count now %d\n", curinum, DIP(curinode, di_nlink));
+	printf("inode %llu link count now %d\n",
+	    (unsigned long long)curinum, DIP(curinode, di_nlink));
 	inodirty();
 	return 0;
 }
@@ -356,7 +359,8 @@ CMDFUNCSTART(downlink)
 	if (!checkactive())
 		return 1;
 	DIP_SET(curinode, di_nlink, DIP(curinode, di_nlink) - 1);
-	printf("inode %d link count now %d\n", curinum, DIP(curinode, di_nlink));
+	printf("inode %llu link count now %d\n",
+	    (unsigned long long)curinum, DIP(curinode, di_nlink));
 	inodirty();
 	return 0;
 }
@@ -386,9 +390,9 @@ scannames(struct inodesc *idesc)
 {
 	struct direct *dirp = idesc->id_dirp;
 
-	printf("slot %d ino %d reclen %d: %s, `%.*s'\n",
-	    slot++, dirp->d_ino, dirp->d_reclen, typename[dirp->d_type],
-	    dirp->d_namlen, dirp->d_name);
+	printf("slot %d ino %llu reclen %d: %s, `%.*s'\n",
+	    slot++, (unsigned long long)dirp->d_ino, dirp->d_reclen,
+	    typename[dirp->d_type], dirp->d_namlen, dirp->d_name);
 	return (KEEPON);
 }
 
@@ -474,7 +478,8 @@ CMDFUNCSTART(ln)
 		return 1;
 	rval = makeentry(curinum, inum, argv[2]);
 	if (rval)
-		printf("Ino %d entered as `%s'\n", inum, argv[2]);
+		printf("Ino %llu entered as `%s'\n",
+		    (unsigned long long)inum, argv[2]);
 	else
 		printf("could not enter name? weird.\n");
 	curinode = ginode(curinum);
@@ -806,11 +811,11 @@ CMDFUNCSTART(chgroup)
 }
 
 static int
-dotime(char *name, int32_t *rsec, int32_t *rnsec)
+dotime(char *name, time_t *rsec, int32_t *rnsec)
 {
 	char *p, *val;
 	struct tm t;
-	int32_t sec;
+	time_t sec;
 	int32_t nsec;
 
 	p = strchr(name, '.');
@@ -865,7 +870,8 @@ badformat:
 
 CMDFUNCSTART(chmtime)
 {
-	int32_t rsec, nsec;
+	time_t rsec;
+	int32_t nsec;
 
 	if (dotime(argv[1], &rsec, &nsec))
 		return 1;
@@ -878,7 +884,8 @@ CMDFUNCSTART(chmtime)
 
 CMDFUNCSTART(chatime)
 {
-	int32_t rsec, nsec;
+	time_t rsec;
+	int32_t nsec;
 
 	if (dotime(argv[1], &rsec, &nsec))
 		return 1;
@@ -891,7 +898,8 @@ CMDFUNCSTART(chatime)
 
 CMDFUNCSTART(chctime)
 {
-	int32_t rsec, nsec;
+	time_t rsec;
+	int32_t nsec;
 
 	if (dotime(argv[1], &rsec, &nsec))
 		return 1;

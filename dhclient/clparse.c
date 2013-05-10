@@ -1,6 +1,6 @@
-/*	$OpenBSD: clparse.c,v 1.55 2013/03/22 23:58:51 krw Exp $	*/
+/*	$OpenBSD: clparse.c,v 1.57 2013/05/02 16:35:27 krw Exp $	*/
 
-/* Parser for dhclient config and lease files... */
+/* Parser for dhclient config and lease files. */
 
 /*
  * Copyright (c) 1997 The Internet Software Consortium.
@@ -57,7 +57,7 @@ read_client_conf(void)
 
 	new_parse(path_dhclient_conf);
 
-	/* Set some defaults... */
+	/* Set some defaults. */
 	config->link_timeout = 10;
 	config->timeout = 60;
 	config->select_interval = 0;
@@ -461,17 +461,11 @@ parse_client_lease_statement(FILE *cfile, int is_static)
 	 * looking for a lease with the same address, and if we find it,
 	 * toss it.
 	 */
-	pl = NULL;
-	for (lp = client->leases; lp; lp = lp->next) {
+	TAILQ_FOREACH_SAFE(lp, &client->leases, next, pl) {
 		if (lp->address.s_addr == lease->address.s_addr) {
-			if (pl)
-				pl->next = lp->next;
-			else
-				client->leases = lp->next;
+			TAILQ_REMOVE(&client->leases, lp, next);
 			free_client_lease(lp);
-			break;
-		} else
-			pl = lp;
+		}
 	}
 
 	/*
@@ -479,8 +473,7 @@ parse_client_lease_statement(FILE *cfile, int is_static)
 	 * recorded leases - don't make it the active lease.
 	 */
 	if (is_static) {
-		lease->next = client->leases;
-		client->leases = lease;
+		TAILQ_INSERT_HEAD(&client->leases, lease, next);
 		return;
 	}
 
@@ -505,8 +498,8 @@ parse_client_lease_statement(FILE *cfile, int is_static)
 		    lease->address.s_addr)
 			free_client_lease(client->active);
 		else {
-			client->active->next = client->leases;
-			client->leases = client->active;
+			TAILQ_INSERT_HEAD(&client->leases, client->active,
+			    next);
 		}
 	}
 	client->active = lease;
@@ -620,7 +613,7 @@ parse_option_decl(FILE *cfile, struct option_data *options)
 		return (-1);
 	}
 
-	/* Parse the option data... */
+	/* Parse the option data. */
 	do {
 		for (fmt = dhcp_options[code].format; *fmt; fmt++) {
 			if (*fmt == 'A')
@@ -631,7 +624,7 @@ parse_option_decl(FILE *cfile, struct option_data *options)
 				    sizeof(hunkbuf) - hunkix);
 				hunkix += len;
 				break;
-			case 't': /* Text string... */
+			case 't': /* Text string. */
 				token = next_token(&val, cfile);
 				if (token != TOK_STRING) {
 					parse_warn("expecting string.");
@@ -664,8 +657,8 @@ alloc:
 				memcpy(&hunkbuf[hunkix], dp, len);
 				hunkix += len;
 				break;
-			case 'L':	/* Unsigned 32-bit integer... */
-			case 'l':	/* Signed 32-bit integer... */
+			case 'L':	/* Unsigned 32-bit integer. */
+			case 'l':	/* Signed 32-bit integer. */
 				token = next_token(&val, cfile);
 				if (token != TOK_NUMBER) {
 need_number:

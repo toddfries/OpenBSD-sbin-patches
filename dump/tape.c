@@ -1,4 +1,4 @@
-/*	$OpenBSD: tape.c,v 1.33 2013/04/16 18:17:39 deraadt Exp $	*/
+/*	$OpenBSD: tape.c,v 1.35 2013/04/25 06:43:20 otto Exp $	*/
 /*	$NetBSD: tape.c,v 1.11 1997/06/05 11:13:26 lukem Exp $	*/
 
 /*-
@@ -231,8 +231,9 @@ do_stats(void)
 	blocks = spcl.c_tapea - tapea_volume;
 	msg("Volume %d completed at: %s", tapeno, ctime(&tnow));
 	if (ttaken > 0) {
-		msg("Volume %d took %d:%02d:%02d\n", tapeno,
-		    ttaken / 3600, (ttaken % 3600) / 60, ttaken % 60);
+		msg("Volume %d took %lld:%02lld:%02lld\n", tapeno,
+		    (long long)ttaken / 3600, ((long long)ttaken % 3600) / 60,
+		    (long long)ttaken % 60);
 		blocks /= ttaken;
 		msg("Volume %d transfer rate: %lld KB/s\n", tapeno, blocks);
 		xferrate += blocks;
@@ -682,8 +683,8 @@ restore_check_point:
 			spcl.c_flags &=~ DR_NEWHEADER;
 		msg("Volume %d started at: %s", tapeno, ctime(&tstart_volume));
 		if (tapeno > 1)
-			msg("Volume %d begins with blocks from inode %d\n",
-				tapeno, slp->inode);
+			msg("Volume %d begins with blocks from inode %llu\n",
+			    tapeno, (unsigned long long)slp->inode);
 	}
 }
 

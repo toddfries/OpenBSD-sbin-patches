@@ -1,4 +1,4 @@
-/*	$OpenBSD: dhclient.c,v 1.242 2013/03/30 16:10:01 krw Exp $	*/
+/*	$OpenBSD: dhclient.c,v 1.247 2013/05/05 16:45:01 krw Exp $	*/
 
 /*
  * Copyright 2004 Henning Brauer <henning@openbsd.org>
@@ -63,7 +63,7 @@
 #include <resolv.h>
 
 #define	CLIENT_PATH 		"PATH=/usr/bin:/usr/sbin:/bin:/sbin"
-#define DEFAULT_LEASE_TIME	43200	/* 12 hours... */
+#define DEFAULT_LEASE_TIME	43200	/* 12 hours. */
 #define TIME_MAX		2147483647
 
 char *path_dhclient_conf = _PATH_DHCLIENT_CONF;
@@ -227,9 +227,13 @@ routehandler(void)
 				    inet_ntoa(client->active->address),
 				    (long long)(client->active->renewal -
 				    time(NULL)));
+				client->flags |= IS_RESPONSIBLE;
 				go_daemon();
 				break;
 			}
+			if ((client->flags & IS_RESPONSIBLE) == 0)
+				/* We're not responsible yet! */
+				break;
 			if (adding.s_addr != INADDR_ANY)
 				rslt = asprintf(&errmsg, "%s, not %s, added "
 				    "to %s", inet_ntoa(a), inet_ntoa(adding),
@@ -242,6 +246,9 @@ routehandler(void)
 				deleting.s_addr = INADDR_ANY;
 				break;
 			}
+			if ((client->flags & IS_RESPONSIBLE) == 0)
+				/* We're not responsible yet! */
+				break;
 			if (adding.s_addr == INADDR_ANY && client->active &&
 			    a.s_addr == client->active->address.s_addr) {
 				/* Tell the priv process active_addr is gone. */
@@ -395,6 +402,8 @@ main(int argc, char *argv[])
 	client = calloc(1, sizeof(*client));
 	if (client == NULL)
 		error("client calloc");
+	TAILQ_INIT(&client->leases);
+	TAILQ_INIT(&client->offered_leases);
 	config = calloc(1, sizeof(*config));
 	if (config == NULL)
 		error("config calloc");
@@ -485,7 +494,7 @@ main(int argc, char *argv[])
 	/* set up the interface */
 	discover_interface();
 
-	/* Register the interface... */
+	/* Register the interface. */
 	if_register_receive();
 	if_register_send();
 
@@ -565,39 +574,11 @@ usage(void)
 }
 
 /*
- * Individual States:
- *
- * Each routine is called from the dhclient_state_machine() in one of
- * these conditions:
- * -> entering INIT state
- * -> recvpacket_flag == 0: timeout in this state
- * -> otherwise: received a packet in this state
- *
- * Return conditions as handled by dhclient_state_machine():
- * Returns 1, sendpacket_flag = 1: send packet, reset timer.
- * Returns 1, sendpacket_flag = 0: just reset the timer (wait for a milestone).
- * Returns 0: finish the nap which was interrupted for no good reason.
- *
- * Several per-interface variables are used to keep track of the process:
- *   active_lease: the lease that is being used on the interface
- *                 (null pointer if not configured yet).
- *   offered_leases: leases corresponding to DHCPOFFER messages that have
- *                   been sent to us by DHCP servers.
- *   acked_leases: leases corresponding to DHCPACK messages that have been
- *                 sent to us by DHCP servers.
- *   sendpacket: DHCP packet we're trying to send.
- *   destination: IP address to send sendpacket to
- * In addition, there are several relevant per-lease variables.
- *   T1_expiry, T2_expiry, lease_expiry: lease milestones
- * In the active lease, these control the process of renewing the lease;
- * In leases on the acked_leases list, this simply determines when we
- * can no longer legitimately use the lease.
+ * Called when the interface link becomes active.
  */
 void
 state_reboot(void)
 {
-	/* Cancel all timeouts, since a link state change gets us here
-	   and can happen anytime. */
 	cancel_timeout();
 	deleting.s_addr = INADDR_ANY;
 	adding.s_addr = INADDR_ANY;
@@ -620,8 +601,7 @@ state_reboot(void)
 }
 
 /*
- * Called when a lease has completely expired and we've
- * been unable to renew it.
+ * Called when a lease has completely expired and we've been unable to renew it.
  */
 void
 state_init(void)
@@ -638,34 +618,29 @@ state_init(void)
 }
 
 /*
- * state_selecting is called when one or more DHCPOFFER packets
- * have been received and a configurable period of time has passed.
+ * Called when one or more DHCPOFFER packets have been received and a
+ * configurable period of time has passed.
  */
 void
 state_selecting(void)
 {
-	struct client_lease *lp, *next, *picked;
+	struct client_lease *lp, *picked;
 	time_t cur_time;
 
-	/* Cancel state_selecting and send_discover timeouts, since either
-	   one could have got us here. */
 	cancel_timeout();
 
-	/* We have received one or more DHCPOFFER packets.   Currently,
-	   the only criterion by which we judge leases is whether or
-	   not we get a response when we arp for them. */
-	picked = NULL;
-	for (lp = client->offered_leases; lp; lp = next) {
-		next = lp->next;
-		if (!picked) {
-			picked = lp;
-		} else {
-			make_decline(lp);
-			send_decline();
-			free_client_lease(lp);
-		}
+	/* Take the first DHCPOFFER, discard the rest. */
+	picked = TAILQ_FIRST(&client->offered_leases);
+	if (picked)
+		TAILQ_REMOVE(&client->offered_leases, picked, next);
+
+	while (!TAILQ_EMPTY(&client->offered_leases)) {
+		lp = TAILQ_FIRST(&client->offered_leases);
+		TAILQ_REMOVE(&client->leases, lp, next);
+		make_decline(lp);
+		send_decline();
+		free_client_lease(lp);
 	}
-	client->offered_leases = NULL;
 
 	/*
 	 * If we just tossed all the leases we were offered, go back
@@ -675,8 +650,6 @@ state_selecting(void)
 		state_panic();
 		return;
 	}
-
-	picked->next = NULL;
 
 	time(&cur_time);
 
@@ -697,7 +670,6 @@ state_selecting(void)
 		return;
 	}
 
-	/* Go to the REQUESTING state. */
 	client->destination.s_addr = INADDR_BROADCAST;
 	client->state = S_REQUESTING;
 	client->first_sending = cur_time;
@@ -749,16 +721,20 @@ dhcpack(struct in_addr client_addr, struct option_data *options, char *info)
 		    getULong(client->new->options[DHO_DHCP_LEASE_TIME].data);
 	else
 		client->new->expiry = DEFAULT_LEASE_TIME;
-	/* A number that looks negative here is really just very large,
-	   because the lease expiry offset is unsigned. */
+	/*
+	 * A number that looks negative here is really just very large,
+	 * because the lease expiry offset is unsigned.
+	 */
 	if (client->new->expiry < 0)
 		client->new->expiry = TIME_MAX;
 	/* XXX should be fixed by resetting the client state */
 	if (client->new->expiry < 60)
 		client->new->expiry = 60;
 
-	/* Take the server-provided renewal time if there is one;
-	   otherwise figure it out according to the spec. */
+	/*
+	 * Take the server-provided renewal time if there is one;
+	 * otherwise figure it out according to the spec.
+	 */
 	if (client->new->options[DHO_DHCP_RENEWAL_TIME].len)
 		client->new->renewal =
 		    getULong(client->new->options[DHO_DHCP_RENEWAL_TIME].data);
@@ -847,15 +823,13 @@ bind_lease(void)
 }
 
 /*
- * state_bound is called when we've successfully bound to a particular
- * lease, but the renewal time on that lease has expired.   We are
- * expected to unicast a DHCPREQUEST to the server that gave us our
- * original lease.
+ * Called when we've successfully bound to a particular lease, but the renewal
+ * time on that lease has expired.  We are expected to unicast a DHCPREQUEST to
+ * the server that gave us our original lease.
  */
 void
 state_bound(void)
 {
-	/* T1 has expired. */
 	client->xid = arc4random();
 	make_request(client->active);
 
@@ -885,7 +859,7 @@ dhcpoffer(struct in_addr client_addr, struct option_data *options, char *info)
 	}
 
 	/* If we've already seen this lease, don't record it again. */
-	for (lp = client->offered_leases; lp; lp = lp->next) {
+	TAILQ_FOREACH(lp, &client->offered_leases, next) {
 		if (!memcmp(&lp->address.s_addr, &client->packet.yiaddr,
 		    sizeof(in_addr_t))) {
 #ifdef DEBUG
@@ -908,37 +882,28 @@ dhcpoffer(struct in_addr client_addr, struct option_data *options, char *info)
 	if (subnet_exists(lease))
 		return;
 
-	/* If this lease was acquired through a BOOTREPLY, record that
-	   fact. */
+	/*
+	 * If this lease was acquired through a BOOTREPLY, record that
+	 * fact.
+	 */
 	if (!options[DHO_DHCP_MESSAGE_TYPE].len)
 		lease->is_bootp = 1;
 
 	/* Figure out when we're supposed to stop selecting. */
 	stop_selecting = client->first_sending + config->select_interval;
 
-	/* If this is the lease we asked for, put it at the head of the
-	   list, and don't mess with the arp request timeout. */
-	if (lease->address.s_addr == client->requested_address.s_addr) {
-		lease->next = client->offered_leases;
-		client->offered_leases = lease;
+	if (TAILQ_EMPTY(&client->offered_leases)) {
+		TAILQ_INSERT_HEAD(&client->offered_leases, lease, next);
+	} else if (lease->address.s_addr == client->requested_address.s_addr) {
+		/* The lease we expected - put it at the head of the list. */
+		TAILQ_INSERT_HEAD(&client->offered_leases, lease, next);
 	} else {
-		/* Put the lease at the end of the list. */
-		lease->next = NULL;
-		if (!client->offered_leases)
-			client->offered_leases = lease;
-		else {
-			for (lp = client->offered_leases; lp->next;
-			    lp = lp->next)
-				;	/* nothing */
-			lp->next = lease;
-		}
+		/* Not the lease we expected - put it at the end of the list. */
+		TAILQ_INSERT_TAIL(&client->offered_leases, lease, next);
 	}
 
 	note("%s", info);
 
-	/* If the selecting interval has expired, go immediately to
-	   state_selecting().  Otherwise, time out into
-	   state_selecting at the select interval. */
 	if (stop_selecting <= time(NULL))
 		state_selecting();
 	else {
@@ -1067,7 +1032,7 @@ dhcpnak(struct in_addr client_addr, struct option_data *options, char *info)
 	free_client_lease(client->active);
 	client->active = NULL;
 
-	/* Stop sending DHCPREQUEST packets... */
+	/* Stop sending DHCPREQUEST packets. */
 	cancel_timeout();
 
 	client->state = S_INIT;
@@ -1132,9 +1097,10 @@ send_discover(void)
 		client->bootrequest_packet.secs = htons(65535);
 	client->secs = client->bootrequest_packet.secs;
 
-	note("DHCPDISCOVER on %s to %s port %d interval %d",
+	note("DHCPDISCOVER on %s to %s port %d interval %lld",
 	    ifi->name, inet_ntoa(sockaddr_broadcast.sin_addr),
-	    ntohs(sockaddr_broadcast.sin_port), client->interval);
+	    ntohs(sockaddr_broadcast.sin_port),
+	    (long long)client->interval);
 
 	send_packet(inaddr_any, &sockaddr_broadcast, NULL);
 
@@ -1142,23 +1108,23 @@ send_discover(void)
 }
 
 /*
- * state_panic gets called if we haven't received any offers in a preset
- * amount of time.   When this happens, we try to use existing leases
- * that haven't yet expired.
+ * Called if we haven't received any offers in a preset amount of time. When
+ * this happens, we try to use existing leases that haven't yet expired.
  */
 void
 state_panic(void)
 {
 	struct client_lease *loop = client->active;
-	struct client_lease *lp;
 	time_t cur_time;
 
 	time(&cur_time);
 	note("No acceptable DHCPOFFERS received.");
 
-	/* We may not have an active lease, but we may have some
-	   predefined leases that we can try. */
-	if (!client->active && client->leases)
+	/*
+	 * We may not have an active lease, but we may have some predefined
+	 * leases that we can try.
+	 */
+	if (!client->active && !TAILQ_EMPTY(&client->leases))
 		goto activate_next;
 
 	/* Run through the list of leases and see if one can be used. */
@@ -1189,26 +1155,28 @@ state_panic(void)
 		}
 
 		/* If there are no other leases, give up. */
-		if (!client->leases) {
-			client->leases = client->active;
+		if (TAILQ_EMPTY(&client->leases)) {
+			TAILQ_INSERT_HEAD(&client->leases, client->active,
+			    next);
 			client->active = NULL;
 			break;
 		}
 
 activate_next:
-		/* Otherwise, put the active lease at the end of the
-		   lease list, and try another lease.. */
-		for (lp = client->leases; lp->next; lp = lp->next)
-			;
-		lp->next = client->active;
-		if (lp->next)
-			lp->next->next = NULL;
-		client->active = client->leases;
-		client->leases = client->leases->next;
+		/*
+		 * Otherwise, put the active lease at the end of the lease
+		 * list, and try another lease.
+		 */
+		if (client->active)
+			TAILQ_INSERT_TAIL(&client->leases, client->active,
+			    next);
+		client->active = TAILQ_FIRST(&client->leases);
+		TAILQ_REMOVE(&client->leases, client->active, next);
 
-		/* If we already tried this lease, we've exhausted the
-		   set of leases, so we might as well give up for
-		   now. */
+		/*
+		 * If we already tried this lease, we've exhausted the set of
+		 * leases, so we might as well give up for now.
+		 */
 		if (client->active == loop)
 			break;
 		else if (!loop)
@@ -1237,16 +1205,19 @@ send_request(void)
 	/* Figure out how long it's been since we started transmitting. */
 	interval = (int)(cur_time - client->first_sending);
 
-	/* If we're in the INIT-REBOOT or REQUESTING state and we're
-	   past the reboot timeout, go to INIT and see if we can
-	   DISCOVER an address... */
-	/* XXX In the INIT-REBOOT state, if we don't get an ACK, it
-	   means either that we're on a network with no DHCP server,
-	   or that our server is down.  In the latter case, assuming
-	   that there is a backup DHCP server, DHCPDISCOVER will get
-	   us a new address, but we could also have successfully
-	   reused our old address.  In the former case, we're hosed
-	   anyway.  This is not a win-prone situation. */
+	/*
+	 * If we're in the INIT-REBOOT or REQUESTING state and we're
+	 * past the reboot timeout, go to INIT and see if we can
+	 * DISCOVER an address.
+	 *
+	 * XXX In the INIT-REBOOT state, if we don't get an ACK, it
+	 * means either that we're on a network with no DHCP server,
+	 * or that our server is down.  In the latter case, assuming
+	 * that there is a backup DHCP server, DHCPDISCOVER will get
+	 * us a new address, but we could also have successfully
+	 * reused our old address.  In the former case, we're hosed
+	 * anyway.  This is not a win-prone situation.
+	 */
 	if ((client->state == S_REBOOTING ||
 	    client->state == S_REQUESTING) &&
 	    interval > config->reboot_timeout) {
@@ -1256,8 +1227,10 @@ send_request(void)
 		return;
 	}
 
-	/* If the lease has expired, relinquish the address and go back
-	   to the INIT state. */
+	/*
+	 * If the lease has expired, relinquish the address and go back to the
+	 * INIT state.
+	 */
 	if (client->state != S_REQUESTING &&
 	    cur_time > client->active->expiry) {
 		if (client->active) {
@@ -1269,7 +1242,7 @@ send_request(void)
 		return;
 	}
 
-	/* Do the exponential backoff... */
+	/* Do the exponential backoff. */
 	if (!client->interval)
 		client->interval = config->initial_interval;
 	else
@@ -1281,14 +1254,18 @@ send_request(void)
 		client->interval = ((config->backoff_cutoff / 2) +
 		    ((arc4random() >> 2) % client->interval));
 
-	/* If the backoff would take us to the expiry time, just set the
-	   timeout to the expiry time. */
+	/*
+	 * If the backoff would take us to the expiry time, just set the
+	 * timeout to the expiry time.
+	 */
 	if (client->state != S_REQUESTING && cur_time + client->interval >
 	    client->active->expiry)
 		client->interval = client->active->expiry - cur_time + 1;
 
-	/* If the lease T2 time has elapsed, or if we're not yet bound,
-	   broadcast the DHCPREQUEST rather than unicasting. */
+	/*
+	 * If the lease rebind time has elapsed, or if we're not yet bound,
+	 * broadcast the DHCPREQUEST rather than unicasting.
+	 */
 	memset(&destination, 0, sizeof(destination));
 	if (client->state == S_REQUESTING ||
 	    client->state == S_REBOOTING ||
@@ -1415,10 +1392,12 @@ make_request(struct client_lease * lease)
 	options[i].data = config->requested_options;
 	options[i].len = config->requested_option_count;
 
-	/* If we are requesting an address that hasn't yet been assigned
-	   to us, use the DHCP Requested Address option. */
+	/*
+	 * If we are requesting an address that hasn't yet been assigned
+	 * to us, use the DHCP Requested Address option.
+	 */
 	if (client->state == S_REQUESTING) {
-		/* Send back the server identifier... */
+		/* Send back the server identifier. */
 		i = DHO_DHCP_SERVER_IDENTIFIER;
 		options[i].data = lease->options[i].data;
 		options[i].len = lease->options[i].len;
@@ -1454,8 +1433,10 @@ make_request(struct client_lease * lease)
 	packet->secs = 0; /* Filled in by send_request. */
 	packet->flags = 0;
 
-	/* If we own the address we're requesting, put it in ciaddr;
-	   otherwise set ciaddr to zero. */
+	/*
+	 * If we own the address we're requesting, put it in ciaddr. Otherwise
+	 * set ciaddr to zero.
+	 */
 	if (client->state == S_BOUND ||
 	    client->state == S_RENEWING ||
 	    client->state == S_REBINDING) {
@@ -1487,7 +1468,7 @@ make_decline(struct client_lease *lease)
 	options[i].data = &decline;
 	options[i].len = sizeof(decline);
 
-	/* Send back the server identifier... */
+	/* Send back the server identifier. */
 	i = DHO_DHCP_SERVER_IDENTIFIER;
 	options[i].data = lease->options[i].data;
 	options[i].len = lease->options[i].len;
@@ -1558,7 +1539,7 @@ rewrite_client_leases(void)
 	fflush(leaseFile);
 	rewind(leaseFile);
 
-	for (lp = client->leases; lp; lp = lp->next) {
+	TAILQ_FOREACH(lp, &client->leases, next) {
 		/* Skip any leases that duplicate the active lease address. */
 		if (client->active && lp->address.s_addr ==
 		    client->active->address.s_addr)
@@ -1674,18 +1655,20 @@ lease_as_string(char *type, struct client_lease *lease)
 		sz -= rslt;
 	}
 
-#define TIMEFMT "%u %Y/%m/%d %T;\n"
-	rsltsz = strftime(p, sz, "  renew " TIMEFMT, gmtime(&lease->renewal));
+	rsltsz = strftime(p, sz, "  renew " DB_TIMEFMT ";\n",
+	    gmtime(&lease->renewal));
 	if (rsltsz == 0)
 		return (NULL);
 	p += rsltsz;
 	sz -= rsltsz;
-	rsltsz = strftime(p, sz, "  rebind " TIMEFMT, gmtime(&lease->rebind));
+	rsltsz = strftime(p, sz, "  rebind " DB_TIMEFMT ";\n",
+	    gmtime(&lease->rebind));
 	if (rsltsz == 0)
 		return (NULL);
 	p += rsltsz;
 	sz -= rsltsz;
-	rsltsz = strftime(p, sz, "  expire " TIMEFMT, gmtime(&lease->expiry));
+	rsltsz = strftime(p, sz, "  expire " DB_TIMEFMT ";\n",
+	    gmtime(&lease->expiry));
 	if (rsltsz == 0)
 		return (NULL);
 	p += rsltsz;
@@ -1707,7 +1690,7 @@ go_daemon(void)
 
 	state = 1;
 
-	/* Stop logging to stderr... */
+	/* Stop logging to stderr. */
 	log_perror = 0;
 
 	if (daemon(1, 0) == -1)
@@ -1722,9 +1705,7 @@ go_daemon(void)
 		nullfd = -1;
 	}
 
-	/*
-	 * Catch stuff that might be trying to terminate the program.
-	 */
+	/* Catch stuff that might be trying to terminate the program. */
 	signal(SIGHUP, sighdlr);
 	signal(SIGINT, sighdlr);
 	signal(SIGTERM, sighdlr);
@@ -1945,7 +1926,6 @@ get_ifname(char *arg)
 /*
  * Update resolv.conf.
  */
-
 char *
 resolv_conf_contents(struct option_data  *domainname,
     struct option_data *nameservers)

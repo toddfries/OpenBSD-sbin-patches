@@ -1,4 +1,4 @@
-/*	$OpenBSD: dirs.c,v 1.33 2011/06/27 23:40:57 tedu Exp $	*/
+/*	$OpenBSD: dirs.c,v 1.35 2013/04/25 06:43:20 otto Exp $	*/
 /*	$NetBSD: dirs.c,v 1.26 1997/07/01 05:37:49 lukem Exp $	*/
 
 /*
@@ -140,8 +140,8 @@ extractdirs(int genmode)
 	int fd;
 
 	Vprintf(stdout, "Extract directories from tape\n");
-	(void)snprintf(dirfile, sizeof(dirfile), "%s/rstdir%d", tmpdir,
-	    dumpdate);
+	(void)snprintf(dirfile, sizeof(dirfile), "%s/rstdir%lld", tmpdir,
+	    (long long)dumpdate);
 	if (command != 'r' && command != 'R') {
 		strlcat(dirfile, "-XXXXXXXXXX", sizeof(dirfile));
 		fd = mkstemp(dirfile);
@@ -153,8 +153,8 @@ extractdirs(int genmode)
 		err(1, "cannot create directory temporary %s", dirfile);
 	}
 	if (genmode != 0) {
-		(void)snprintf(modefile, sizeof(modefile), "%s/rstmode%d",
-		    tmpdir, dumpdate);
+		(void)snprintf(modefile, sizeof(modefile), "%s/rstmode%lld",
+		    tmpdir, (long long)dumpdate);
 		if (command != 'r' && command != 'R') {
 			strlcat(modefile, "-XXXXXXXXXX", sizeof(modefile));
 			fd = mkstemp(modefile);
@@ -493,8 +493,8 @@ rst_readdir(RST_DIR *dirp)
 		if (dp->d_ino == 0 && strcmp(dp->d_name, "/") == 0)
 			return (NULL);
 		if (dp->d_ino >= maxino) {
-			Dprintf(stderr, "corrupted directory: bad inum %d\n",
-				dp->d_ino);
+			Dprintf(stderr, "corrupted directory: bad inum %llu\n",
+			    (unsigned long long)dp->d_ino);
 			continue;
 		}
 		return (dp);
@@ -574,8 +574,8 @@ setdirmodes(int flags)
 
 	Vprintf(stdout, "Set directory mode, owner, and times.\n");
 	if (command == 'r' || command == 'R')
-		(void)snprintf(modefile, sizeof(modefile), "%s/rstmode%d",
-		    tmpdir, dumpdate);
+		(void)snprintf(modefile, sizeof(modefile), "%s/rstmode%lld",
+		    tmpdir, (long long)dumpdate);
 	if (modefile[0] == '#') {
 		panic("modefile not defined\n");
 		fputs("directory mode, owner, and times not set\n", stderr);
@@ -606,7 +606,8 @@ setdirmodes(int flags)
 				continue;
 		}
 		if (ep == NULL) {
-			panic("cannot find directory inode %d\n", node.ino);
+			panic("cannot find directory inode %llu\n",
+			    (unsigned long long)node.ino);
 		} else {
 			if (!Nflag) {
 				cp = myname(ep);
@@ -636,7 +637,8 @@ genliteraldir(char *name, ino_t ino)
 
 	itp = inotablookup(ino);
 	if (itp == NULL)
-		panic("Cannot find directory inode %d named %s\n", ino, name);
+		panic("Cannot find directory inode %llu named %s\n",
+		    (unsigned long long)ino, name);
 	if ((ofile = open(name, O_WRONLY | O_CREAT | O_TRUNC, 0666)) < 0) {
 		warn("%s: cannot create file", name);
 		return (FAIL);
@@ -646,14 +648,14 @@ genliteraldir(char *name, ino_t ino)
 	for (i = itp->t_size; i > 0; i -= BUFSIZ) {
 		size = i < BUFSIZ ? i : BUFSIZ;
 		if (read(dp, buf, (int) size) == -1) {
-			warnx("write error extracting inode %d, name %s",
-			    curfile.ino, curfile.name);
+			warnx("write error extracting inode %llu, name %s",
+			    (unsigned long long)curfile.ino, curfile.name);
 			err(1, "read");
 		}
 		if (!Nflag && write(ofile, buf, (int) size) == -1) {
 			fprintf(stderr,
-				"write error extracting inode %d, name %s\n",
-				curfile.ino, curfile.name);
+			    "write error extracting inode %llu, name %s\n",
+			    (unsigned long long)curfile.ino, curfile.name);
 			err(1, "write");
 		}
 	}
