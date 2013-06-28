@@ -1,4 +1,4 @@
-/*	$OpenBSD: disklabel.c,v 1.185 2012/04/06 18:20:35 deraadt Exp $	*/
+/*	$OpenBSD: disklabel.c,v 1.187 2013/06/18 18:24:15 krw Exp $	*/
 
 /*
  * Copyright (c) 1987, 1993
@@ -716,7 +716,7 @@ char
 canonical_unit(struct disklabel *lp, char unit)
 {
 	struct partition *pp;
-	daddr64_t small;
+	daddr_t small;
 	int i;
 
 	if (unit == '*') {
@@ -979,6 +979,7 @@ duid_parse(struct disklabel *lp, char *s)
 	if (strlen(s) != 16)
 		return -1;
 
+	memset(duid, 0, sizeof(duid));
 	for (i = 0; i < 16; i++) {
 		c = s[i];
 		if (c >= '0' && c <= '9')
@@ -1359,8 +1360,9 @@ checklabel(struct disklabel *lp)
 		part = 'a' + i;
 		pp = &lp->d_partitions[i];
 		if (DL_GETPSIZE(pp) || DL_GETPOFFSET(pp))
-			warnx("warning, unused partition %c: size %lld offset %lld",
-			    'a' + i, DL_GETPSIZE(pp), DL_GETPOFFSET(pp));
+			warnx("warning, unused partition %c: size %lld "
+			    "offset %lld", part, DL_GETPSIZE(pp),
+			    DL_GETPOFFSET(pp));
 	}
 	return (errors > 0);
 }
@@ -1377,7 +1379,7 @@ setbootflag(struct disklabel *lp)
 {
 	struct partition *pp;
 	int i, errors = 0;
-	daddr64_t bend;
+	daddr_t bend;
 	char part;
 
 	if (bootbuf == NULL)

@@ -1,4 +1,4 @@
-/*	$OpenBSD: sysctl.c,v 1.189 2013/04/16 22:06:48 deraadt Exp $	*/
+/*	$OpenBSD: sysctl.c,v 1.192 2013/06/09 12:54:38 tedu Exp $	*/
 /*	$NetBSD: sysctl.c,v 1.9 1995/09/30 07:12:50 thorpej Exp $	*/
 
 /*
@@ -87,6 +87,8 @@
 #include <ufs/ufs/quota.h>
 #include <ufs/ufs/inode.h>
 #include <ufs/ffs/ffs_extern.h>
+
+#include <miscfs/fuse/fusefs.h>
 
 #include <nfs/nfsproto.h>
 #include <nfs/nfs.h>
@@ -1103,6 +1105,7 @@ debuginit(void)
 struct ctlname vfsgennames[] = CTL_VFSGENCTL_NAMES;
 struct ctlname ffsname[] = FFS_NAMES;
 struct ctlname nfsname[] = FS_NFS_NAMES;
+struct ctlname fusefsname[] = FUSEFS_NAMES;
 struct list *vfsvars;
 int *vfs_typenums;
 
@@ -1124,7 +1127,7 @@ vfsinit(void)
 	buflen = 4;
 	if (sysctl(mib, 3, &maxtypenum, &buflen, (void *)0, (size_t)0) < 0)
 		return;
-	maxtypenum++;	/* + generic */
+	maxtypenum++;	/* + generic (0) */
 	if ((vfs_typenums = calloc(maxtypenum, sizeof(int))) == NULL)
 		return;
 	if ((vfsvars = calloc(maxtypenum, sizeof(*vfsvars))) == NULL) {
@@ -1139,7 +1142,7 @@ vfsinit(void)
 	mib[2] = VFS_CONF;
 	buflen = sizeof vfc;
 	for (loc = lastused, cnt = 1; cnt < maxtypenum; cnt++) {
-		mib[3] = cnt - 1;
+		mib[3] = cnt;
 		if (sysctl(mib, 4, &vfc, &buflen, (void *)0, (size_t)0) < 0) {
 			if (errno == EOPNOTSUPP)
 				continue;
@@ -1156,6 +1159,10 @@ vfsinit(void)
 		if (!strcmp(vfc.vfc_name, MOUNT_NFS)) {
 			vfsvars[cnt].list = nfsname;
 			vfsvars[cnt].size = NFS_MAXID;
+		}
+		if (!strcmp(vfc.vfc_name, MOUNT_FUSEFS)) {
+			vfsvars[cnt].list = fusefsname;
+			vfsvars[cnt].size = FUSEFS_MAXID;
 		}
 		vfs_typenums[cnt] = vfc.vfc_typenum;
 		strlcat(&names[loc], vfc.vfc_name, sizeof names - loc);
@@ -2175,6 +2182,7 @@ sysctl_mpls(char *string, char **bufpp, int mib[], int flags, int *typep)
 int
 sysctl_pipex(char *string, char **bufpp, int mib[], int flags, int *typep)
 {
+	struct list *lp;
 	int indx;
 
 	if (*bufpp == NULL) {
@@ -2185,6 +2193,20 @@ sysctl_pipex(char *string, char **bufpp, int mib[], int flags, int *typep)
 		return (-1);
 	mib[2] = indx;
 	*typep = pipexlist.list[indx].ctl_type;
+	if (*typep == CTLTYPE_NODE) {
+		int tindx;
+
+		if (*bufpp == NULL) {
+			listall(string, &ifqlist);
+			return(-1);
+		}
+		lp = &ifqlist;
+		if ((tindx = findname(string, "fourth", bufpp, lp)) == -1)
+			return (-1);
+		mib[3] = tindx;
+		*typep = lp->list[tindx].ctl_type;
+		return(4);
+	}
 	return (3);
 }
 
