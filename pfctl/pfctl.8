@@ -1,4 +1,4 @@
-.\" $OpenBSD: pfctl.8,v 1.158 2013/07/05 13:07:57 blambert Exp $
+.\" $OpenBSD: pfctl.8,v 1.163 2013/07/21 17:22:49 jmc Exp $
 .\"
 .\" Copyright (c) 2001 Kjell Wooding.  All rights reserved.
 .\"
@@ -24,7 +24,7 @@
 .\" (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 .\" THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 .\"
-.Dd $Mdocdate: July 5 2013 $
+.Dd $Mdocdate: July 21 2013 $
 .Dt PFCTL 8
 .Os
 .Sh NAME
@@ -55,37 +55,25 @@ The
 utility communicates with the packet filter device using the
 ioctl interface described in
 .Xr pf 4 .
-It allows ruleset and parameter configuration and retrieval of status
-information from the packet filter.
-.Pp
+It allows ruleset and parameter configuration,
+and retrieval of status information from the packet filter.
 Packet filtering restricts the types of packets that pass through
 network interfaces entering or leaving the host based on filter
 rules as described in
 .Xr pf.conf 5 .
 The packet filter can also replace addresses and ports of packets.
-Replacing source addresses and ports of outgoing packets is called
-NAT (Network Address Translation) and is used to connect an internal
-network (usually reserved address space) to an external one (the
-Internet) by making all connections to external hosts appear to
-come from the gateway.
-Replacing destination addresses and ports of incoming packets
-is used to redirect connections to different hosts and/or ports.
-A combination of both translations, bidirectional NAT, is also
-supported.
-Translation rules are described in
-.Xr pf.conf 5 .
 .Pp
-When the variable
-.Va pf
-is set to
-.Dv YES
-in
-.Xr rc.conf.local 8 ,
-the rule file specified with the variable
-.Va pf_rules
-is loaded automatically by the
+The packet filter is enabled by default.
+Should
+.Nm
+be unable to load a ruleset,
+an error occurs and the original ruleset remains in place.
+If this happens at system startup,
+the ruleset defined by the
+.Va RULES
+variable in
 .Xr rc 8
-scripts and the packet filter is enabled.
+remains in place.
 .Pp
 The packet filter does not itself forward packets between interfaces.
 Forwarding can be enabled by setting the
@@ -98,9 +86,7 @@ to 1.
 Set them permanently in
 .Xr sysctl.conf 5 .
 .Pp
-The
-.Nm
-utility provides several commands.
+At least one option must be specified.
 The options are as follows:
 .Bl -tag -width Ds
 .It Fl a Ar anchor
@@ -570,12 +556,12 @@ line.
 # pfctl -t test -vTshow
    198.51.100.81
         Cleared:        Fri Jun 28 11:17:37 2013
-        In/Block:       [ Packets: 0              Bytes: 0              ]
-        In/Match        [ Packets: 54             Bytes: 10028          ]
-        In/Pass:        [ Packets: 5              Bytes: 1949           ]
-        Out/Block:      [ Packets: 0              Bytes: 0              ]
-        Out/Match       [ Packets: 65             Bytes: 12684          ]
-        Out/Pass:       [ Packets: 6              Bytes: 389            ]
+        In/Block:       [ Packets: 0	Bytes: 0	]
+        In/Match        [ Packets: 54	Bytes: 10028	]
+        In/Pass:        [ Packets: 5	Bytes: 1949	]
+        Out/Block:      [ Packets: 0	Bytes: 0	]
+        Out/Match       [ Packets: 65	Bytes: 12684	]
+        Out/Pass:       [ Packets: 6	Bytes: 389	]
 .Ed
 .Pp
 Similarly, it is possible to view global information about the tables
@@ -593,16 +579,16 @@ packet statistics for the whole table:
 --a-r-C test
         Addresses:   1
         Cleared:     Fri Jun 28 11:17:37 2013
-        References:  [ Anchors: 0              Rules: 4              ]
-        Evaluations: [ NoMatch: 35             Match: 8              ]
-        In/Block:    [ Packets: 0              Bytes: 0              ]
-        In/Match:    [ Packets: 54             Bytes: 10028          ]
-        In/Pass:     [ Packets: 5              Bytes: 1949           ]
-        In/XPass:    [ Packets: 0              Bytes: 0              ]
-        Out/Block:   [ Packets: 0              Bytes: 0              ]
-        Out/Match:   [ Packets: 65             Bytes: 12684          ]
-        Out/Pass:    [ Packets: 6              Bytes: 389            ]
-        Out/XPass:   [ Packets: 0              Bytes: 0              ]
+        References:  [ Anchors: 0	Rules: 4	]
+        Evaluations: [ NoMatch: 35	Match: 8	]
+        In/Block:    [ Packets: 0	Bytes: 0	]
+        In/Match:    [ Packets: 54	Bytes: 10028	]
+        In/Pass:     [ Packets: 5	Bytes: 1949	]
+        In/XPass:    [ Packets: 0	Bytes: 0	]
+        Out/Block:   [ Packets: 0	Bytes: 0	]
+        Out/Match:   [ Packets: 65	Bytes: 12684	]
+        Out/Pass:    [ Packets: 6	Bytes: 389	]
+        Out/XPass:   [ Packets: 0	Bytes: 0	]
 .Ed
 .Pp
 Only packets creating state are matched in the Evaluations line,
