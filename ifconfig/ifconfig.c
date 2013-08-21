@@ -1,4 +1,4 @@
-/*	$OpenBSD: ifconfig.c,v 1.267 2013/07/16 08:21:10 mpi Exp $	*/
+/*	$OpenBSD: ifconfig.c,v 1.269 2013/08/19 11:20:57 dcoppa Exp $	*/
 /*	$NetBSD: ifconfig.c,v 1.40 1997/10/01 02:19:43 enami Exp $	*/
 
 /*
@@ -100,6 +100,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <util.h>
 #include <ifaddrs.h>
 
 #include "brconfig.h"
@@ -4069,8 +4070,8 @@ spppauthinfo(struct sauthreq *spa, int d)
 
 	ifr.ifr_data = (caddr_t)spa;
 	spa->cmd = d == 0 ? SPPPIOGMAUTH : SPPPIOGHAUTH;
-	if (ioctl(s, SIOCGIFGENERIC, &ifr) == -1)
-		err(1, "SIOCGIFGENERIC(SPPPIOGXAUTH)");
+	if (ioctl(s, SIOCGSPPPPARAMS, &ifr) == -1)
+		err(1, "SIOCGSPPPPARAMS(SPPPIOGXAUTH)");
 }
 
 void
@@ -4090,8 +4091,8 @@ setspppproto(const char *val, int d)
 		errx(1, "setpppproto");
 
 	spa.cmd = d == 0 ? SPPPIOSMAUTH : SPPPIOSHAUTH;
-	if (ioctl(s, SIOCSIFGENERIC, &ifr) == -1)
-		err(1, "SIOCSIFGENERIC(SPPPIOSXAUTH)");
+	if (ioctl(s, SIOCSSPPPPARAMS, &ifr) == -1)
+		err(1, "SIOCSSPPPPARAMS(SPPPIOSXAUTH)");
 }
 
 void
@@ -4113,8 +4114,8 @@ setspppname(const char *val, int d)
 		errx(1, "setspppname");
 
 	spa.cmd = d == 0 ? SPPPIOSMAUTH : SPPPIOSHAUTH;
-	if (ioctl(s, SIOCSIFGENERIC, &ifr) == -1)
-		err(1, "SIOCSIFGENERIC(SPPPIOSXAUTH)");
+	if (ioctl(s, SIOCSSPPPPARAMS, &ifr) == -1)
+		err(1, "SIOCSSPPPPARAMS(SPPPIOSXAUTH)");
 }
 
 void
@@ -4136,8 +4137,8 @@ setspppkey(const char *val, int d)
 		errx(1, "setspppkey");
 
 	spa.cmd = d == 0 ? SPPPIOSMAUTH : SPPPIOSHAUTH;
-	if (ioctl(s, SIOCSIFGENERIC, &ifr) == -1)
-		err(1, "SIOCSIFGENERIC(SPPPIOSXAUTH)");
+	if (ioctl(s, SIOCSSPPPPARAMS, &ifr) == -1)
+		err(1, "SIOCSSPPPPARAMS(SPPPIOSXAUTH)");
 }
 
 void
@@ -4169,8 +4170,8 @@ setsppppeerflag(const char *val, int d)
 		spa.flags |= flag;
 
 	spa.cmd = SPPPIOSHAUTH;
-	if (ioctl(s, SIOCSIFGENERIC, &ifr) == -1)
-		err(1, "SIOCSIFGENERIC(SPPPIOSXAUTH)");
+	if (ioctl(s, SIOCSSPPPPARAMS, &ifr) == -1)
+		err(1, "SIOCSSPPPPARAMS(SPPPIOSXAUTH)");
 }
 
 void
@@ -4212,11 +4213,11 @@ sppp_status(void)
 
 	ifr.ifr_data = (caddr_t)&spr;
 	spr.cmd = SPPPIOGDEFS;
-	if (ioctl(s, SIOCGIFGENERIC, &ifr) == -1) {
+	if (ioctl(s, SIOCGSPPPPARAMS, &ifr) == -1) {
 		return;
 	}
 
-	if (spr.cmd != SPPPIOGDEFS || spr.phase == PHASE_DEAD)
+	if (spr.phase == PHASE_DEAD)
 		return;
 	printf("\tsppp: phase ");
 	switch (spr.phase) {
