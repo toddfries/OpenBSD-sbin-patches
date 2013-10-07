@@ -1,4 +1,4 @@
-/*	$OpenBSD: mkfs.c,v 1.78 2013/06/11 16:42:05 deraadt Exp $	*/
+/*	$OpenBSD: mkfs.c,v 1.80 2013/10/07 11:51:11 krw Exp $	*/
 /*	$NetBSD: mkfs.c,v 1.25 1995/06/18 21:35:38 cgd Exp $	*/
 
 /*
@@ -86,7 +86,7 @@
 extern int	mfs;		/* run as the memory based filesystem */
 extern int	Nflag;		/* run mkfs without writing file system */
 extern int	Oflag;		/* format as an 4.3BSD file system */
-extern daddr_t fssize;	/* file system size */
+extern daddr_t fssize;		/* file system size in 512-byte blocks. */
 extern long long	sectorsize;	/* bytes/sector */
 extern int	fsize;		/* fragment size */
 extern int	bsize;		/* block size */
@@ -490,7 +490,8 @@ mkfs(struct partition *pp, char *fsys, int fi, int fo, mode_t mfsmode,
 #define B2MBFACTOR (1 / (1024.0 * 1024.0))
 		printf("%s: %.1fMB in %jd sectors of %lld bytes\n", fsys,
 		    (float)sblock.fs_size * sblock.fs_fsize * B2MBFACTOR,
-		    (intmax_t)fsbtodb(&sblock, sblock.fs_size), sectorsize);
+		    (intmax_t)fsbtodb(&sblock, sblock.fs_size) /
+		    (sectorsize / DEV_BSIZE), sectorsize);
 		printf("%d cylinder groups of %.2fMB, %d blocks, %d"
 		    " inodes each\n", sblock.fs_ncg,
 		    (float)sblock.fs_fpg * sblock.fs_fsize * B2MBFACTOR,
@@ -1168,7 +1169,7 @@ struct inoinfo {
   
         ino_t   i_dotdot;               /* inode number of `..' */
         u_int   i_numblks;              /* size of block array in bytes */
-        daddr_t       i_blks[1];              /* actually longer */
+        daddr_t i_blks[1];              /* actually longer */
 };
 
 static void
