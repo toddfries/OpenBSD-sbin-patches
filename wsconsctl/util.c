@@ -1,4 +1,4 @@
-/*	$OpenBSD: util.c,v 1.59 2012/10/29 11:56:19 stsp Exp $ */
+/*	$OpenBSD: util.c,v 1.61 2013/10/20 22:07:57 miod Exp $ */
 /*	$NetBSD: util.c,v 1.8 2000/03/14 08:11:53 sato Exp $ */
 
 /*-
@@ -164,7 +164,8 @@ static const struct nameint dpytype_tab[] = {
 	{ WSDISPLAY_TYPE_IMPACT,	"impact" },
 	{ WSDISPLAY_TYPE_GRTWO,		"grtwo" },
 	{ WSDISPLAY_TYPE_NEWPORT,	"newport" },
-	{ WSDISPLAY_TYPE_LIGHT,		"light" }
+	{ WSDISPLAY_TYPE_LIGHT,		"light" },
+	{ WSDISPLAY_TYPE_KMS,		"kms" }
 };
 
 static const struct nameint kbdenc_tab[] = {
@@ -303,6 +304,9 @@ pr_field(const char *pre, struct field *f, const char *sep)
 		break;
 	case FMT_SCREEN:
 		print_screen((struct wsdisplay_screentype *) f->valp);
+		break;
+	case FMT_STRING:
+		printf("%s", (const char *)f->valp);
 		break;
 	default:
 		errx(1, "internal error: pr_field: no format %d", f->format);
@@ -454,6 +458,9 @@ rd_field(struct field *f, char *val, int merge)
 
 		break;
 	}
+	case FMT_STRING:
+		strlcpy(f->valp, val, WSFONT_NAME_SIZE);
+		break;
 	default:
 		errx(1, "internal error: rd_field: no format %d", f->format);
 		break;
