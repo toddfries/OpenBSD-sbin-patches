@@ -1,4 +1,4 @@
-/*	$OpenBSD: inode.c,v 1.38 2013/06/11 16:42:04 deraadt Exp $	*/
+/*	$OpenBSD: inode.c,v 1.40 2013/11/03 02:22:07 krw Exp $	*/
 /*	$NetBSD: inode.c,v 1.23 1996/10/11 20:15:47 thorpej Exp $	*/
 
 /*
@@ -239,8 +239,9 @@ chkrange(daddr_t blk, int cnt)
 	if (cnt > sblock.fs_frag ||
 	    fragnum(&sblock, blk) + cnt > sblock.fs_frag) {
 		if (debug)
-			printf("bad size: blk %lld, offset %lld, size %d\n",
-			    blk, fragnum(&sblock, blk), cnt);
+			printf("bad size: blk %lld, offset %lld, size %lld\n",
+			    (long long)blk, (long long)fragnum(&sblock, blk),
+			    cnt);
 		return (1);
 	}
 	c = dtog(&sblock, blk);
@@ -248,9 +249,11 @@ chkrange(daddr_t blk, int cnt)
 		if ((blk + cnt) > cgsblock(&sblock, c)) {
 			if (debug) {
 				printf("blk %lld < cgdmin %lld;",
-				    blk, cgdmin(&sblock, c));
+				    (long long)blk,
+				    (long long)cgdmin(&sblock, c));
 				printf(" blk + cnt %lld > cgsbase %lld\n",
-				    blk + cnt, cgsblock(&sblock, c));
+				    (long long)(blk + cnt),
+				    (long long)cgsblock(&sblock, c));
 			}
 			return (1);
 		}
@@ -258,9 +261,10 @@ chkrange(daddr_t blk, int cnt)
 		if ((blk + cnt) > cgbase(&sblock, c+1)) {
 			if (debug)  {
 				printf("blk %lld >= cgdmin %lld;",
-				    blk, cgdmin(&sblock, c));
+				    (long long)blk,
+				    (long long)cgdmin(&sblock, c));
 				printf(" blk + cnt %lld > sblock.fs_fpg %d\n",
-				    blk+cnt, sblock.fs_fpg);
+				    (long long)(blk+cnt), sblock.fs_fpg);
 			}
 			return (1);
 		}
