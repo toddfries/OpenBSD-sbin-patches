@@ -1,4 +1,4 @@
-/*	$OpenBSD: ifconfig.c,v 1.275 2013/10/28 15:05:35 deraadt Exp $	*/
+/*	$OpenBSD: ifconfig.c,v 1.277 2013/11/12 04:59:02 deraadt Exp $	*/
 /*	$NetBSD: ifconfig.c,v 1.40 1997/10/01 02:19:43 enami Exp $	*/
 
 /*
@@ -540,6 +540,10 @@ void	ieee80211_status(void);
 void	ieee80211_listchans(void);
 void	ieee80211_listnodes(void);
 void	ieee80211_printnode(struct ieee80211_nodereq *);
+u_int	getwpacipher(const char *name);
+void	print_cipherset(u_int32_t cipherset);
+
+void	spppauthinfo(struct sauthreq *spa, int d);
 
 /* Known address families */
 const struct afswtch {
@@ -3163,7 +3167,8 @@ settunnel(const char *src, const char *dst)
 	int ecode;
 	struct if_laddrreq req;
 
-	if (strchr (dst, ':') == NULL) {
+	if (strchr(dst, ':') == NULL || strchr(dst, ':') != strrchr(dst, ':')) {
+		/* no port or IPv6 */
 		dstip = dst;
 		dstport = NULL;
 	} else {

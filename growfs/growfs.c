@@ -1,4 +1,4 @@
-/*	$OpenBSD: growfs.c,v 1.31 2013/06/11 16:42:04 deraadt Exp $	*/
+/*	$OpenBSD: growfs.c,v 1.33 2013/11/10 00:48:04 krw Exp $	*/
 /*
  * Copyright (c) 2000 Christoph Herrmann, Thomas-Henning von Kamptz
  * Copyright (c) 1980, 1989, 1993 The Regents of the University of California.
@@ -1901,7 +1901,7 @@ main(int argc, char **argv)
 	DBG_FUNC("main")
 	char	*device;
 	int	ch;
-	unsigned int	size = 0;
+	long long	size = 0;
 	unsigned int	Nflag = 0;
 	int	ExpertFlag = 0;
 	struct stat	st;
@@ -1909,6 +1909,7 @@ main(int argc, char **argv)
 	struct partition	*pp;
 	int	i,fsi,fso;
 	char	reply[5];
+	const char *errstr;
 #ifdef FSMAXSNAP
 	int	j;
 #endif /* FSMAXSNAP */
@@ -1924,8 +1925,8 @@ main(int argc, char **argv)
 			quiet = 1;
 			break;
 		case 's':
-			size = (size_t)atol(optarg);
-			if (size < 1)
+			size = strtonum(optarg, 1, LLONG_MAX, &errstr);
+			if (errstr)
 				usage();
 			break;
 		case 'v': /* for compatibility to newfs */
@@ -1985,7 +1986,7 @@ main(int argc, char **argv)
 	/*
 	 * Check if that partition is suitable for growing a file system.
 	 */
-	if (pp->p_size < 1)
+	if (DL_GETPSIZE(pp) < 1)
 		errx(1, "partition is unavailable");
 	if (pp->p_fstype != FS_BSDFFS)
 		errx(1, "can only grow ffs partitions");
@@ -2020,13 +2021,13 @@ main(int argc, char **argv)
 	 * Determine size to grow to. Default to the full size specified in
 	 * the disk label.
 	 */
-	sblock.fs_size = dbtofsb(&osblock, pp->p_size);
+	sblock.fs_size = dbtofsb(&osblock, DL_SECTOBLK(lp, DL_GETPSIZE(pp)));
 	if (size != 0) {
-		if (size > pp->p_size) {
-			errx(1, "there is not enough space (%d < %d)",
-			    pp->p_size, size);
+		if (size > DL_GETPSIZE(pp)) {
+			errx(1, "there is not enough space (%llu < %lld)",
+			    DL_GETPSIZE(pp), size);
 		}
-		sblock.fs_size = dbtofsb(&osblock, size);
+		sblock.fs_size = dbtofsb(&osblock, DL_SECTOBLK(lp, size));
 	}
 
 	/*
@@ -2075,8 +2076,8 @@ main(int argc, char **argv)
 	 * later on realize we have to abort our operation, on that block
 	 * there should be no data, so we can't destroy something yet.
 	 */
-	wtfs((daddr_t)pp->p_size-1, (size_t)DEV_BSIZE, (void *)&sblock,
-	    fso, Nflag);
+	wtfs(DL_SECTOBLK(lp, DL_GETPSIZE(pp)) - 1, (size_t)DEV_BSIZE,
+	    (void *)&sblock, fso, Nflag);
 
 	/*
 	 * Now calculate new superblock values and check for reasonable

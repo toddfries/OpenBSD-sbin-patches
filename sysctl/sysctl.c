@@ -1,4 +1,4 @@
-/*	$OpenBSD: sysctl.c,v 1.195 2013/10/22 16:40:28 guenther Exp $	*/
+/*	$OpenBSD: sysctl.c,v 1.197 2013/11/15 22:20:04 millert Exp $	*/
 /*	$NetBSD: sysctl.c,v 1.9 1995/09/30 07:12:50 thorpej Exp $	*/
 
 /*
@@ -102,6 +102,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <unistd.h>
 
 #include <machine/cpu.h>
 
@@ -2716,7 +2717,7 @@ sysctl_emul(char *string, char *newval, int flags)
 
 }
 
-int
+static int
 emulcmp(const void *m, const void *n)
 {
 	const struct emulname *a = m, *b = n;

@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.c,v 1.24 2013/05/02 16:35:27 krw Exp $	*/
+/*	$OpenBSD: parse.c,v 1.26 2013/11/20 17:22:46 deraadt Exp $	*/
 
 /* Common parser code for dhcpd and dhclient. */
 
@@ -42,6 +42,8 @@
 
 #include "dhcpd.h"
 #include "dhctoken.h"
+
+int parse_numeric_aggregate(FILE *, unsigned char *, int, int, int);
 
 /*
  * Skip to the semicolon ending the current statement.   If we encounter
@@ -254,7 +256,8 @@ convert_num(unsigned char *buf, char *str, int base, int size)
 			if (ptr[1] == 'x') {
 				base = 16;
 				ptr += 2;
-			} else if (isascii(ptr[1]) && isdigit(ptr[1])) {
+			} else if (isascii((unsigned char)ptr[1]) &&
+			    isdigit((unsigned char)ptr[1])) {
 				base = 8;
 				ptr += 1;
 			} else

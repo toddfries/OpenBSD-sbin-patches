@@ -1,4 +1,4 @@
-/*	$OpenBSD: dhclient.c,v 1.263 2013/10/22 18:15:58 krw Exp $	*/
+/*	$OpenBSD: dhclient.c,v 1.268 2013/11/20 17:22:46 deraadt Exp $	*/
 
 /*
  * Copyright 2004 Henning Brauer <henning@openbsd.org>
@@ -93,7 +93,6 @@ struct imsgbuf *unpriv_ibuf;
 void		 sighdlr(int);
 int		 findproto(char *, int);
 struct sockaddr	*get_ifa(char *, int);
-int		 resolv_conf_priority(int);
 void		 usage(void);
 int		 res_hnok(const char *dn);
 char		*option_as_string(unsigned int code, unsigned char *data, int len);
@@ -113,6 +112,29 @@ void add_static_routes(int, struct option_data *);
 void add_classless_static_routes(int, struct option_data *);
 
 int compare_lease(struct client_lease *, struct client_lease *);
+
+void state_reboot(void);
+void state_init(void);
+void state_selecting(void);
+void state_bound(void);
+void state_panic(void);
+
+void send_discover(void);
+void send_request(void);
+void send_decline(void);
+
+void bind_lease(void);
+
+void make_discover(struct client_lease *);
+void make_request(struct client_lease *);
+void make_decline(struct client_lease *);
+
+void rewrite_client_leases(void);
+void rewrite_option_db(struct client_lease *, struct client_lease *);
+char *lease_as_string(char *, struct client_lease *);
+
+struct client_lease *packet_to_lease(struct in_addr, struct option_data *);
+void go_daemon(void);
 
 #define	ROUNDUP(a) \
 	    ((a) > 0 ? (1 + (((a) - 1) | (sizeof(long) - 1))) : sizeof(long))
@@ -651,7 +673,6 @@ void
 state_selecting(void)
 {
 	struct client_lease *lp, *picked;
-	time_t cur_time;
 
 	cancel_timeout();
 
@@ -676,8 +697,6 @@ state_selecting(void)
 		state_panic();
 		return;
 	}
-
-	time(&cur_time);
 
 	/* If it was a BOOTREPLY, we can just take the lease right now. */
 	if (!picked->options[DHO_DHCP_MESSAGE_TYPE].len) {
@@ -717,7 +736,8 @@ state_selecting(void)
 
 	client->destination.s_addr = INADDR_BROADCAST;
 	client->state = S_REQUESTING;
-	client->first_sending = cur_time;
+	client->first_sending = time(NULL);
+
 	client->interval = 0;
 
 	/*
@@ -1345,13 +1365,15 @@ send_request(void)
 		client->interval = client->active->expiry - cur_time + 1;
 
 	/*
-	 * If the lease rebind time has elapsed, or if we're not yet bound,
-	 * broadcast the DHCPREQUEST rather than unicasting.
+ 	 * If the reboot timeout has expired, or the lease rebind time has
+	 * elapsed, or if we're not yet bound, broadcast the DHCPREQUEST rather
+	 * than unicasting.
 	 */
 	memset(&destination, 0, sizeof(destination));
 	if (client->state == S_REQUESTING ||
 	    client->state == S_REBOOTING ||
-	    cur_time > client->active->rebind)
+	    cur_time > client->active->rebind ||
+	    interval > config->reboot_timeout)
 		destination.sin_addr.s_addr = INADDR_BROADCAST;
 	else
 		destination.sin_addr.s_addr = client->destination.s_addr;
@@ -1808,11 +1830,11 @@ int
 res_hnok(const char *name)
 {
 	const char *dn = name;
-	int pch = '.', ch = *dn++;
+	int pch = '.', ch = (unsigned char)*dn++;
 	int warn = 0;
 
 	while (ch != '\0') {
-		int nch = *dn++;
+		int nch = (unsigned char)*dn++;
 
 		if (ch == '.') {
 			;
