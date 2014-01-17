@@ -1,4 +1,4 @@
-/*	$OpenBSD: clparse.c,v 1.62 2013/11/11 21:00:01 krw Exp $	*/
+/*	$OpenBSD: clparse.c,v 1.71 2014/01/13 23:42:18 krw Exp $	*/
 
 /* Parser for dhclient config and lease files. */
 
@@ -58,7 +58,7 @@ void parse_reject_statement(FILE *);
  *			 | client-declaration
  *			 | client-declarations client-declaration
  */
-int
+void
 read_client_conf(void)
 {
 	FILE *cfile;
@@ -100,11 +100,8 @@ read_client_conf(void)
 				break;
 			parse_client_statement(cfile);
 		} while (1);
-		token = next_token(NULL, cfile); /* Clear the peek buffer */
 		fclose(cfile);
 	}
-
-	return (!warnings_occurred);
 }
 
 /*
@@ -130,11 +127,9 @@ read_client_leases(void)
 			break;
 		if (token != TOK_LEASE) {
 			warning("Corrupt lease file - possible data loss!");
-			skip_to_semi(cfile);
 			break;
-		} else
-			parse_client_lease_statement(cfile, 0);
-
+		}
+	       	parse_client_lease_statement(cfile, 0);
 	} while (1);
 	fclose(cfile);
 }
@@ -166,38 +161,35 @@ void
 parse_client_statement(FILE *cfile)
 {
 	u_int8_t optlist[256];
-	int token, code, count;
+	int code, count;
 
 	switch (next_token(NULL, cfile)) {
 	case TOK_SEND:
 		parse_option_decl(cfile, &config->send_options[0]);
-		return;
+		break;
 	case TOK_DEFAULT:
 		code = parse_option_decl(cfile, &config->defaults[0]);
 		if (code != -1)
 			config->default_actions[code] = ACTION_DEFAULT;
-		return;
+		break;
 	case TOK_SUPERSEDE:
 		code = parse_option_decl(cfile, &config->defaults[0]);
 		if (code != -1)
 			config->default_actions[code] = ACTION_SUPERSEDE;
-		return;
+		break;
 	case TOK_APPEND:
 		code = parse_option_decl(cfile, &config->defaults[0]);
 		if (code != -1)
 			config->default_actions[code] = ACTION_APPEND;
-		return;
+		break;
 	case TOK_PREPEND:
 		code = parse_option_decl(cfile, &config->defaults[0]);
 		if (code != -1)
 			config->default_actions[code] = ACTION_PREPEND;
-		return;
-	case TOK_MEDIA:
-		skip_to_semi(cfile);
-		return;
+		break;
 	case TOK_HARDWARE:
 		parse_hardware_param(cfile, &ifi->hw_address);
-		return;
+		break;
 	case TOK_REQUEST:
 		count = parse_option_list(cfile, optlist, sizeof(optlist));
 		if (count != -1) {
@@ -205,7 +197,7 @@ parse_client_statement(FILE *cfile)
 			memcpy(config->requested_options, optlist,
 			    sizeof(config->requested_options));
 		}
-		return;
+		break;
 	case TOK_REQUIRE:
 		count = parse_option_list(cfile, optlist, sizeof(optlist));
 		if (count != -1) {
@@ -213,7 +205,7 @@ parse_client_statement(FILE *cfile)
 			memcpy(config->required_options, optlist,
 			    sizeof(config->required_options));
 		}
-		return;
+		break;
 	case TOK_IGNORE:
 		count = parse_option_list(cfile, optlist, sizeof(optlist));
 		if (count != -1) {
@@ -221,49 +213,46 @@ parse_client_statement(FILE *cfile)
 			memcpy(config->ignored_options, optlist,
 			    sizeof(config->ignored_options));
 		}
-		return;
+		break;
 	case TOK_LINK_TIMEOUT:
 		parse_lease_time(cfile, &config->link_timeout);
-		return;
+		break;
 	case TOK_TIMEOUT:
 		parse_lease_time(cfile, &config->timeout);
-		return;
+		break;
 	case TOK_RETRY:
 		parse_lease_time(cfile, &config->retry_interval);
-		return;
+		break;
 	case TOK_SELECT_TIMEOUT:
 		parse_lease_time(cfile, &config->select_interval);
-		return;
+		break;
 	case TOK_REBOOT:
 		parse_lease_time(cfile, &config->reboot_timeout);
-		return;
+		break;
 	case TOK_BACKOFF_CUTOFF:
 		parse_lease_time(cfile, &config->backoff_cutoff);
-		return;
+		break;
 	case TOK_INITIAL_INTERVAL:
 		parse_lease_time(cfile, &config->initial_interval);
-		return;
+		break;
 	case TOK_INTERFACE:
 		parse_interface_declaration(cfile);
-		return;
+		break;
 	case TOK_LEASE:
 		parse_client_lease_statement(cfile, 1);
-		return;
+		break;
 	case TOK_ALIAS:
+	case TOK_MEDIA:
+		/* Deprecated and ignored. */
 		skip_to_semi(cfile);
-		return;
+		break;
 	case TOK_REJECT:
 		parse_reject_statement(cfile);
-		return;
+		break;
 	default:
 		parse_warn("expecting a statement.");
 		skip_to_semi(cfile);
 		break;
-	}
-	token = next_token(NULL, cfile);
-	if (token != ';') {
-		parse_warn("semicolon expected.");
-		skip_to_semi(cfile);
 	}
 }
 
@@ -279,7 +268,8 @@ parse_X(FILE *cfile, u_int8_t *buf, int max)
 		len = 0;
 		do {
 			token = next_token(&val, cfile);
-			if (token != TOK_NUMBER && token != TOK_NUMBER_OR_NAME) {
+			if (token != TOK_NUMBER && token !=
+			    TOK_NUMBER_OR_NAME) {
 				parse_warn("expecting hexadecimal constant.");
 				skip_to_semi(cfile);
 				return (0);
@@ -357,13 +347,13 @@ parse_option_list(FILE *cfile, u_int8_t *list, size_t sz)
 			;
 		if (j == ix)
 			list[ix++] = i;
-		token = next_token(&val, cfile);
+		token = peek_token(NULL, cfile);
+		if (token == ',')
+			token = next_token(NULL, cfile);
 	} while (token == ',');
-	if (token != ';') {
-		parse_warn("expecting semicolon.");
-		goto syntaxerror;
-	}
-	return (ix);
+
+	if (parse_semi(cfile))
+		return (ix);
 
 syntaxerror:
 	skip_to_semi(cfile);
@@ -546,12 +536,12 @@ parse_client_lease_declaration(FILE *cfile, struct client_lease *lease)
 		if (token != TOK_STRING) {
 			parse_warn("expecting interface name (in quotes).");
 			skip_to_semi(cfile);
-			break;
+			return;
 		}
 		if (strcmp(ifi->name, val) != 0) {
 			parse_warn("wrong interface name.");
 			skip_to_semi(cfile);
-			break;
+			return;
 		}
 		break;
 	case TOK_FIXED_ADDR:
@@ -586,13 +576,10 @@ parse_client_lease_declaration(FILE *cfile, struct client_lease *lease)
 	default:
 		parse_warn("expecting lease declaration.");
 		skip_to_semi(cfile);
-		break;
+		return;
 	}
-	token = next_token(&val, cfile);
-	if (token != ';') {
-		parse_warn("expecting semicolon.");
-		skip_to_semi(cfile);
-	}
+
+	parse_semi(cfile);
 }
 
 int
@@ -734,14 +721,13 @@ bad_flag:
 				return (-1);
 			}
 		}
-		token = next_token(&val, cfile);
+		token = peek_token(NULL, cfile);
+		if (*fmt == 'A' && token == ',')
+			token = next_token(NULL, cfile);
 	} while (*fmt == 'A' && token == ',');
 
-	if (token != ';') {
-		parse_warn("semicolon expected.");
-		skip_to_semi(cfile);
+	if (!parse_semi(cfile))
 		return (-1);
-	}
 
 	options[code].data = malloc(hunkix + nul_term);
 	if (!options[code].data)
@@ -754,7 +740,7 @@ bad_flag:
 void
 parse_reject_statement(FILE *cfile)
 {
-	struct reject_elem *list;
+	struct reject_elem *elem;
 	struct in_addr addr;
 	int token;
 
@@ -765,19 +751,17 @@ parse_reject_statement(FILE *cfile)
 			return;
 		}
 
-		list = malloc(sizeof(struct reject_elem));
-		if (!list)
-			error("no memory for reject list!");
+		elem = malloc(sizeof(struct reject_elem));
+		if (!elem)
+			error("no memory for reject address!");
 
-		list->addr = addr;
-		list->next = config->reject_list;
-		config->reject_list = list;
+		elem->addr = addr;
+		TAILQ_INSERT_TAIL(&config->reject_list, elem, next);
 
-		token = next_token(NULL, cfile);
+		token = peek_token(NULL, cfile);
+		if (token == ',')
+			token = next_token(NULL, cfile);
 	} while (token == ',');
 
-	if (token != ';') {
-		parse_warn("expecting semicolon.");
-		skip_to_semi(cfile);
-	}
+	parse_semi(cfile);
 }

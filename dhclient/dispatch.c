@@ -1,4 +1,4 @@
-/*	$OpenBSD: dispatch.c,v 1.83 2013/11/16 19:34:43 krw Exp $	*/
+/*	$OpenBSD: dispatch.c,v 1.87 2013/12/08 22:49:02 krw Exp $	*/
 
 /*
  * Copyright 2004 Henning Brauer <henning@openbsd.org>
@@ -84,21 +84,22 @@ discover_interface(void)
 			struct sockaddr_dl *foo =
 			    (struct sockaddr_dl *)ifa->ifa_addr;
 
+			if (foo->sdl_alen != ETHER_ADDR_LEN)
+				continue;
+				
 			ifi->index = foo->sdl_index;
-			ifi->hw_address.hlen = foo->sdl_alen;
-			ifi->hw_address.htype = HTYPE_ETHER; /* XXX */
-			memcpy(ifi->hw_address.haddr, LLADDR(foo),
-			    foo->sdl_alen);
+			memcpy(ifi->hw_address.ether_addr_octet, LLADDR(foo),
+			    ETHER_ADDR_LEN);
 			opt = &config->send_options[DHO_DHCP_CLIENT_IDENTIFIER];
 			if (opt->len == 0) {
 				/* Build default client identifier. */
-				data = calloc(1, foo->sdl_alen + 1);
+				data = calloc(1, ETHER_ADDR_LEN + 1);
 				if (data != NULL) {
-					data[0] = ifi->hw_address.htype;
+					data[0] = HTYPE_ETHER;
 					memcpy(&data[1], LLADDR(foo),
-					    foo->sdl_alen);
+					    ETHER_ADDR_LEN);
 					opt->data = data;
-					opt->len = foo->sdl_alen + 1;
+					opt->len = ETHER_ADDR_LEN + 1;
 				}
 			}
 		}
@@ -237,7 +238,7 @@ void
 got_one(void)
 {
 	struct sockaddr_in from;
-	struct hardware hfrom;
+	struct ether_addr hfrom;
 	struct in_addr ifrom;
 	ssize_t result;
 
@@ -256,7 +257,7 @@ got_one(void)
 	if (result == 0)
 		return;
 
-	memcpy(&ifrom, &from.sin_addr, sizeof(ifrom));
+	ifrom.s_addr = from.sin_addr.s_addr;
 
 	do_packet(from.sin_port, ifrom, &hfrom);
 }
@@ -398,13 +399,16 @@ get_rdomain(char *name)
 int
 subnet_exists(struct client_lease *l)
 {
+	struct option_data *opt;
 	struct ifaddrs *ifap, *ifa;
 	struct in_addr mymask, myaddr, mynet, hismask, hisaddr, hisnet;
 	int myrdomain, hisrdomain;
 
-	memset(&mymask, 0, sizeof(mymask));
-	memcpy(&mymask.s_addr, l->options[DHO_SUBNET_MASK].data,
-	    l->options[DHO_SUBNET_MASK].len);
+	opt = &l->options[DHO_SUBNET_MASK];
+	if (opt->len == sizeof(mymask))
+		mymask.s_addr = ((struct in_addr *)opt->data)->s_addr;
+	else
+		mymask.s_addr = INADDR_ANY;
 	myaddr.s_addr = l->address.s_addr;
 	mynet.s_addr = mymask.s_addr & myaddr.s_addr;
 

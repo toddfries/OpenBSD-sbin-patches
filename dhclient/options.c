@@ -1,4 +1,4 @@
-/*	$OpenBSD: options.c,v 1.56 2013/07/11 01:34:00 krw Exp $	*/
+/*	$OpenBSD: options.c,v 1.65 2013/12/30 03:36:17 krw Exp $	*/
 
 /* DHCP options parsing and reassembly. */
 
@@ -41,6 +41,8 @@
  */
 
 #include "dhcpd.h"
+
+#include <vis.h>
 
 int parse_option_buffer(struct option_data *, unsigned char *, int);
 
@@ -189,6 +191,61 @@ cons_options(struct option_data *options)
 }
 
 /*
+ * Use vis() to encode characters of src and append encoded characters onto
+ * dst. Also encode ", ', $, ` and \, to ensure resulting strings can be
+ * represented as '"' delimited strings and safely passed to scripts. Surround
+ * result with double quotes if emit_punct is true.
+ */
+int
+pretty_print_string(unsigned char *dst, size_t dstlen, unsigned char *src,
+    size_t srclen, int emit_punct)
+{
+	char visbuf[5];
+	unsigned char *origsrc = src;
+	int opcount = 0, total = 0;
+
+	if (emit_punct) {
+		opcount = snprintf(dst, dstlen, "\"");
+		if (opcount == -1)
+			return (-1);
+		total += opcount;
+		if (opcount >= dstlen)
+			goto done;
+		dstlen -= opcount;
+		dst += opcount;
+	}
+
+	for (; src < origsrc + srclen; src++) {
+		if (*src && strchr("\"'$`\\", *src))
+			opcount = snprintf(dst, dstlen, "\\%c", *src);
+		else {
+			vis(visbuf, *src, VIS_OCTAL, *src+1);
+			opcount = snprintf(dst, dstlen, "%s", visbuf);
+		}
+		if (opcount == -1)
+			return (-1);
+		total += opcount;
+		if (opcount >= dstlen)
+			goto done;
+		dstlen -= opcount;
+		dst += opcount;
+	}
+
+	if (emit_punct) {
+		opcount = snprintf(dst, dstlen, "\"");
+		if (opcount == -1)
+			return (-1);
+		total += opcount;
+		if (opcount >= dstlen)
+			goto done;
+		dstlen -= opcount;
+		dst += opcount;
+	}
+done:
+	return (total);
+}
+
+/*
  * Format the specified option so that a human can easily read it.
  */
 char *
@@ -202,6 +259,7 @@ pretty_print_option(unsigned int code, struct option_data *option,
 	unsigned char *data = option->data;
 	unsigned char *dp = data;
 	int len = option->len;
+	int opcount = 0;
 	struct in_addr foo;
 	char comma;
 
@@ -250,7 +308,6 @@ pretty_print_option(unsigned int code, struct option_data *option,
 				fmtbuf[i] = 't';
 				numhunk = -2;
 			} else {
-				fmtbuf[i] = 'x';
 				hunksize++;
 				comma = ':';
 				numhunk = 0;
@@ -258,7 +315,6 @@ pretty_print_option(unsigned int code, struct option_data *option,
 			fmtbuf[i + 1] = 0;
 			break;
 		case 't':
-			fmtbuf[i] = 't';
 			fmtbuf[i + 1] = 0;
 			numhunk = -2;
 			break;
@@ -316,132 +372,78 @@ pretty_print_option(unsigned int code, struct option_data *option,
 	/* Cycle through the array (or hunk) printing the data. */
 	for (i = 0; i < numhunk; i++) {
 		for (j = 0; j < numelem; j++) {
-			int opcount;
-			size_t oplen;
 			switch (fmtbuf[j]) {
 			case 't':
-				if (emit_punct) {
-					*op++ = '"';
-					opleft--;
-				}
-				for (; dp < data + len; dp++) {
-					if (!isascii(*dp) ||
-					    !isprint(*dp)) {
-						if (dp + 1 != data + len ||
-						    *dp != 0) {
-							size_t oplen;
-							snprintf(op, opleft,
-							    "\\%03o", *dp);
-							oplen = strlen(op);
-							op += oplen;
-							opleft -= oplen;
-						}
-					} else if (*dp == '"' ||
-					    *dp == '\'' ||
-					    *dp == '$' ||
-					    *dp == '`' ||
-					    *dp == '\\') {
-						*op++ = '\\';
-						*op++ = *dp;
-						opleft -= 2;
-					} else {
-						*op++ = *dp;
-						opleft--;
-					}
-				}
-				if (emit_punct) {
-					*op++ = '"';
-					opleft--;
-				}
-
-				*op = 0;
+				opcount = pretty_print_string(op, opleft,
+				    dp, len, emit_punct);
 				break;
 			case 'I':
 				foo.s_addr = htonl(getULong(dp));
-				opcount = strlcpy(op, inet_ntoa(foo), opleft);
-				if (opcount >= opleft)
-					goto toobig;
-				opleft -= opcount;
+				opcount = snprintf(op, opleft, "%s",
+				    inet_ntoa(foo));
 				dp += 4;
 				break;
 			case 'l':
 				opcount = snprintf(op, opleft, "%ld",
 				    (long)getLong(dp));
-				if (opcount >= opleft || opcount == -1)
-					goto toobig;
-				opleft -= opcount;
 				dp += 4;
 				break;
 			case 'L':
 				opcount = snprintf(op, opleft, "%ld",
 				    (unsigned long)getULong(dp));
-				if (opcount >= opleft || opcount == -1)
-					goto toobig;
-				opleft -= opcount;
 				dp += 4;
 				break;
 			case 's':
 				opcount = snprintf(op, opleft, "%d",
 				    getShort(dp));
-				if (opcount >= opleft || opcount == -1)
-					goto toobig;
-				opleft -= opcount;
 				dp += 2;
 				break;
 			case 'S':
 				opcount = snprintf(op, opleft, "%d",
 				    getUShort(dp));
-				if (opcount >= opleft || opcount == -1)
-					goto toobig;
-				opleft -= opcount;
 				dp += 2;
 				break;
 			case 'b':
 				opcount = snprintf(op, opleft, "%d",
-				    *(char *)dp++);
-				if (opcount >= opleft || opcount == -1)
-					goto toobig;
-				opleft -= opcount;
+				    *(char *)dp);
+				dp++;
 				break;
 			case 'B':
-				opcount = snprintf(op, opleft, "%d", *dp++);
-				if (opcount >= opleft || opcount == -1)
-					goto toobig;
-				opleft -= opcount;
+				opcount = snprintf(op, opleft, "%d", *dp);
+				dp++;
 				break;
-			case 'x':
-				opcount = snprintf(op, opleft, "%x", *dp++);
-				if (opcount >= opleft || opcount == -1)
-					goto toobig;
-				opleft -= opcount;
+			case 'X':
+				opcount = snprintf(op, opleft, "%x", *dp);
+				dp++;
 				break;
 			case 'f':
-				opcount = strlcpy(op,
-				    *dp++ ? "true" : "false", opleft);
-				if (opcount >= opleft)
-					goto toobig;
-				opleft -= opcount;
+				opcount = snprintf(op, opleft, "%s",
+				    *dp ? "true" : "false");
+				dp++;
 				break;
 			default:
 				warning("Unexpected format code %c", fmtbuf[j]);
-			}
-			oplen = strlen(op);
-			op += oplen;
-			opleft -= oplen;
-			if (opleft < 1)
 				goto toobig;
+			}
+			if (opcount >= opleft || opcount == -1)
+				goto toobig;
+			opleft -= opcount;
+			op += opcount;
 			if (j + 1 < numelem && comma != ':') {
-				*op++ = ' ';
-				opleft--;
+				opcount = snprintf(op, opleft, " ");
+				if (opcount >= opleft || opcount == -1)
+					goto toobig;
+				opleft -= opcount;
+				op += opcount;
 			}
 		}
 		if (i + 1 < numhunk) {
-			*op++ = comma;
-			opleft--;
+			opcount = snprintf(op, opleft, "%c", comma);
+			if (opcount >= opleft || opcount == -1)
+				goto toobig;
+			opleft -= opcount;
+			op += opcount;
 		}
-		if (opleft < 1)
-			goto toobig;
-
 	}
 
 done:
@@ -454,7 +456,7 @@ toobig:
 
 void
 do_packet(unsigned int from_port, struct in_addr from,
-    struct hardware *hfrom)
+    struct ether_addr *hfrom)
 {
 	struct dhcp_packet *packet = &client->packet;
 	struct option_data options[256];
@@ -463,14 +465,14 @@ do_packet(unsigned int from_port, struct in_addr from,
 	char *type, *info;
 	int i, rslt, options_valid = 1;
 
-	if (ifi->hw_address.hlen != packet->hlen) {
+	if (packet->hlen != ETHER_ADDR_LEN) {
 #ifdef DEBUG
 		debug("Discarding packet with hlen != %s (%u)",
 		    ifi->name, packet->hlen);
 #endif
 		return;
-	} else if (memcmp(ifi->hw_address.haddr, packet->chaddr,
-	    packet->hlen)) {
+	} else if (memcmp(&ifi->hw_address, packet->chaddr,
+	    sizeof(ifi->hw_address))) {
 #ifdef DEBUG
 		debug("Discarding packet with chaddr != %s (%s)", ifi->name,
 		    ether_ntoa((struct ether_addr *)packet->chaddr));
@@ -486,7 +488,7 @@ do_packet(unsigned int from_port, struct in_addr from,
 		return;
 	}
 
-	for (ap = config->reject_list; ap; ap = ap->next)
+	TAILQ_FOREACH(ap, &config->reject_list, next)
 		if (from.s_addr == ap->addr.s_addr) {
 #ifdef DEBUG
 			debug("Discarding packet from address on reject list "
@@ -552,11 +554,8 @@ do_packet(unsigned int from_port, struct in_addr from,
 #endif
 	}
 
-	if (hfrom->hlen == 6)
-		rslt = asprintf(&info, "%s from %s (%s)", type, inet_ntoa(from),
-		    ether_ntoa((struct ether_addr *)hfrom->haddr));
-	else
-		rslt = asprintf(&info, "%s from %s", type, inet_ntoa(from));
+	rslt = asprintf(&info, "%s from %s (%s)", type, inet_ntoa(from),
+	    ether_ntoa(hfrom));
 	if (rslt == -1)
 		error("no memory for info string");
 

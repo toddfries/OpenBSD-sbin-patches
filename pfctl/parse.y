@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.y,v 1.626 2013/10/17 19:59:54 henning Exp $	*/
+/*	$OpenBSD: parse.y,v 1.628 2013/11/25 12:52:45 benno Exp $	*/
 
 /*
  * Copyright (c) 2001 Markus Friedl.  All rights reserved.
@@ -465,7 +465,7 @@ int	parseport(char *, struct range *r, int);
 
 #define DYNIF_MULTIADDR(addr) ((addr).type == PF_ADDR_DYNIFTL && \
 	(!((addr).iflags & PFI_AFLAG_NOALIAS) ||		 \
-	!isdigit((addr).v.ifname[strlen((addr).v.ifname)-1])))
+	!isdigit((unsigned char)(addr).v.ifname[strlen((addr).v.ifname)-1])))
 
 %}
 
@@ -3112,7 +3112,7 @@ dynaddr		: '(' STRING ')'		{
 			char	*p, *op;
 
 			op = $2;
-			if (!isalpha(op[0])) {
+			if (!isalpha((unsigned char)op[0])) {
 				yyerror("invalid interface name '%s'", op);
 				free(op);
 				YYERROR;
@@ -5536,9 +5536,9 @@ lookup(char *s)
 
 #define MAXPUSHBACK	128
 
-char	*parsebuf;
+u_char	*parsebuf;
 int	 parseindex;
-char	 pushback_buffer[MAXPUSHBACK];
+u_char	 pushback_buffer[MAXPUSHBACK];
 int	 pushback_index = 0;
 
 int
@@ -5630,8 +5630,8 @@ findeol(void)
 int
 yylex(void)
 {
-	char	 buf[8096];
-	char	*p, *val;
+	u_char	 buf[8096];
+	u_char	*p, *val;
 	int	 quotec, next, c;
 	int	 token;
 
@@ -5654,7 +5654,7 @@ top:
 				return (findeol());
 			}
 			if (isalnum(c) || c == '_') {
-				*p++ = (char)c;
+				*p++ = c;
 				continue;
 			}
 			*p = '\0';
@@ -5699,7 +5699,7 @@ top:
 				yyerror("string too long");
 				return (findeol());
 			}
-			*p++ = (char)c;
+			*p++ = c;
 		}
 		yylval.v.string = strdup(buf);
 		if (yylval.v.string == NULL)

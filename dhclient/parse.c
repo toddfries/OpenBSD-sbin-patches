@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.c,v 1.26 2013/11/20 17:22:46 deraadt Exp $	*/
+/*	$OpenBSD: parse.c,v 1.31 2014/01/13 23:42:18 krw Exp $	*/
 
 /* Common parser code for dhcpd and dhclient. */
 
@@ -70,9 +70,10 @@ skip_to_semi(FILE *cfile)
 		token = peek_token(NULL, cfile);
 		if (token == '}') {
 			if (brace_count) {
-				token = next_token(NULL, cfile);
-				if (!--brace_count)
+				if (!--brace_count) {
+					token = next_token(NULL, cfile);
 					return;
+				}
 			} else
 				return;
 		} else if (token == '{') {
@@ -145,39 +146,22 @@ parse_ip_addr(FILE *cfile, struct in_addr *addr)
  * csns :== NUMBER | csns COLON NUMBER
  */
 void
-parse_hardware_param(FILE *cfile, struct hardware *hardware)
+parse_hardware_param(FILE *cfile, struct ether_addr *hardware)
 {
 	int token;
 
 	token = next_token(NULL, cfile);
-	switch (token) {
-	case TOK_ETHERNET:
-		hardware->htype = HTYPE_ETHER;
-		hardware->hlen = 6;
-		break;
-	case TOK_TOKEN_RING:
-		hardware->htype = HTYPE_IEEE802;
-		hardware->hlen = 6;
-		break;
-	case TOK_FDDI:
-		hardware->htype = HTYPE_FDDI;
-		hardware->hlen = 6;
-		break;
-	default:
-		parse_warn("expecting a network hardware type");
+	if (token != TOK_ETHERNET) {
+		parse_warn("expecting 'ethernet'");
 		skip_to_semi(cfile);
 		return;
 	}
 
-	if (parse_numeric_aggregate(cfile, hardware->haddr, hardware->hlen,
-	    ':', 16) == 0)
+	if (parse_numeric_aggregate(cfile, hardware->ether_addr_octet,
+	    ETHER_ADDR_LEN, ':', 16) == 0)
 		return;
 
-	token = next_token(NULL, cfile);
-	if (token != ';') {
-		parse_warn("expecting semicolon.");
-		skip_to_semi(cfile);
-	}
+	parse_semi(cfile);
 }
 
 /*
@@ -223,7 +207,8 @@ parse_numeric_aggregate(FILE *cfile, unsigned char *buf, int max, int separator,
 
 		token = next_token(&val, cfile);
 
-		if (token == TOK_NUMBER || (base == 16 && token == TOK_NUMBER_OR_NAME))
+		if (token == TOK_NUMBER || (base == 16 && token ==
+			TOK_NUMBER_OR_NAME))
 			/* XXX Need to check if conversion was successful. */
 			convert_num(buf, val, base, 8);
 		else

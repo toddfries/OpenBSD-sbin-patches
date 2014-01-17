@@ -1,4 +1,4 @@
-/*	$OpenBSD: util.c,v 1.19 2013/10/24 02:55:50 deraadt Exp $	*/
+/*	$OpenBSD: util.c,v 1.23 2013/12/03 13:55:40 markus Exp $	*/
 
 /*
  * Copyright (c) 2010-2013 Reyk Floeter <reyk@openbsd.org>
@@ -75,13 +75,13 @@ socket_af(struct sockaddr *sa, in_port_t port)
 }
 
 in_port_t
-socket_getport(struct sockaddr_storage *ss)
+socket_getport(struct sockaddr *sa)
 {
-	switch (ss->ss_family) {
+	switch (sa->sa_family) {
 	case AF_INET:
-		return (ntohs(((struct sockaddr_in *)ss)->sin_port));
+		return (ntohs(((struct sockaddr_in *)sa)->sin_port));
 	case AF_INET6:
-		return (ntohs(((struct sockaddr_in6 *)ss)->sin6_port));
+		return (ntohs(((struct sockaddr_in6 *)sa)->sin6_port));
 	default:
 		return (0);
 	}
@@ -407,7 +407,7 @@ void
 lc_string(char *str)
 {
 	for (; *str != '\0'; str++)
-		*str = tolower(*str);
+		*str = tolower((unsigned char)*str);
 }
 
 void
@@ -416,7 +416,7 @@ print_hex(u_int8_t *buf, off_t offset, size_t length)
 	u_int		 i;
 	extern int	 verbose;
 
-	if (verbose < 2 || !length)
+	if (verbose < 3 || !length)
 		return;
 
 	for (i = 0; i < length; i++) {
@@ -447,12 +447,12 @@ print_hexval(u_int8_t *buf, off_t offset, size_t length)
 }
 
 const char *
-print_bits(u_short v, char *bits)
+print_bits(u_short v, u_char *bits)
 {
 	static char	 buf[IKED_CYCLE_BUFFERS][BUFSIZ];
 	static int	 idx = 0;
 	u_int		 i, any = 0, j = 0;
-	char		 c;
+	u_char		 c;
 
 	if (!bits)
 		return ("");
@@ -472,7 +472,7 @@ print_bits(u_short v, char *bits)
 			}
 			any = 1;
 			for (; (c = *bits) > 32; bits++) {
-				buf[idx][j++] = tolower(c);
+				buf[idx][j++] = tolower((unsigned char)c);
 				if (j >= sizeof(buf[idx]))
 					return (buf[idx]);
 			}
@@ -579,7 +579,7 @@ prefixlen2mask6(u_int8_t prefixlen, u_int32_t *mask)
 }
 
 const char *
-print_host(struct sockaddr_storage *ss, char *buf, size_t len)
+print_host(struct sockaddr *sa, char *buf, size_t len)
 {
 	static char	sbuf[IKED_CYCLE_BUFFERS][NI_MAXHOST + 7];
 	static int	idx = 0;
@@ -593,18 +593,18 @@ print_host(struct sockaddr_storage *ss, char *buf, size_t len)
 			idx = 0;
 	}
 
-	if (ss->ss_family == AF_UNSPEC) {
+	if (sa->sa_family == AF_UNSPEC) {
 		strlcpy(buf, "any", len);
 		return (buf);
 	}
 
-	if (getnameinfo((struct sockaddr *)ss, ss->ss_len,
+	if (getnameinfo(sa, sa->sa_len,
 	    buf, len, NULL, 0, NI_NUMERICHOST) != 0) {
 		buf[0] = '\0';
 		return (NULL);
 	}
 
-	if ((port = socket_getport(ss)) != 0) {
+	if ((port = socket_getport(sa)) != 0) {
 		snprintf(pbuf, sizeof(pbuf), ":%d", port);
 		(void)strlcat(buf, pbuf, len);
 	}
@@ -619,7 +619,7 @@ get_string(u_int8_t *ptr, size_t len)
 	char	*str;
 
 	for (i = 0; i < len; i++)
-		if (!isprint((char)ptr[i]))
+		if (!isprint(ptr[i]))
 			break;
 
 	if ((str = calloc(1, i + 1)) == NULL)

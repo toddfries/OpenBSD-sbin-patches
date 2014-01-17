@@ -1,4 +1,4 @@
-/*	$OpenBSD: ifconfig.c,v 1.277 2013/11/12 04:59:02 deraadt Exp $	*/
+/*	$OpenBSD: ifconfig.c,v 1.280 2013/12/01 10:05:29 stsp Exp $	*/
 /*	$NetBSD: ifconfig.c,v 1.40 1997/10/01 02:19:43 enami Exp $	*/
 
 /*
@@ -505,7 +505,7 @@ int	getinfo(struct ifreq *, int);
 void	getsock(int);
 void	printgroupattribs(char *);
 void	printif(char *, int);
-void	printb_status(unsigned short, char *);
+void	printb_status(unsigned short, unsigned char *);
 const char *get_linkstate(int, int);
 void	status(int, struct sockaddr_dl *, int);
 void	usage(int);
@@ -800,7 +800,7 @@ getinfo(struct ifreq *ifr, int create)
 	getsock(af);
 	if (s < 0)
 		err(1, "socket");
-	if (!isdigit(name[strlen(name) - 1]))
+	if (!isdigit((unsigned char)name[strlen(name) - 1]))
 		return (-1);	/* ignore groups here */
 	if (ioctl(s, SIOCGIFFLAGS, (caddr_t)ifr) < 0) {
 		int oerrno = errno;
@@ -939,7 +939,8 @@ printif(char *ifname, int ifaliases)
 		if ((oname = strdup(ifname)) == NULL)
 			err(1, "strdup");
 		nlen = strlen(oname);
-		if (nlen && !isdigit(oname[nlen - 1]))	/* is it a group? */
+		/* is it a group? */
+		if (nlen && !isdigit((unsigned char)oname[nlen - 1]))
 			if (printgroup(oname, ifaliases) != -1) {
 				free(oname);
 				return;
@@ -952,14 +953,14 @@ printif(char *ifname, int ifaliases)
 	namep = NULL;
 	for (ifa = ifap; ifa; ifa = ifa->ifa_next) {
 		if (oname) {
-			if (nlen && isdigit(oname[nlen - 1])) {
+			if (nlen && isdigit((unsigned char)oname[nlen - 1])) {
 				/* must have exact match */
 				if (strcmp(oname, ifa->ifa_name) != 0)
 					continue;
 			} else {
 				/* partial match OK if it ends w/ digit */
 				if (strncmp(oname, ifa->ifa_name, nlen) != 0 ||
-				    !isdigit(ifa->ifa_name[nlen]))
+				    !isdigit((unsigned char)ifa->ifa_name[nlen]))
 					continue;
 			}
 		}
@@ -1376,7 +1377,8 @@ setifgroup(const char *group_name, int dummy)
 	memset(&ifgr, 0, sizeof(ifgr));
 	strlcpy(ifgr.ifgr_name, name, IFNAMSIZ);
 
-	if (group_name[0] && isdigit(group_name[strlen(group_name) - 1]))
+	if (group_name[0] &&
+	    isdigit((unsigned char)group_name[strlen(group_name) - 1]))
 		errx(1, "setifgroup: group names may not end in a digit");
 
 	if (strlcpy(ifgr.ifgr_group, group_name, IFNAMSIZ) >= IFNAMSIZ)
@@ -1396,7 +1398,8 @@ unsetifgroup(const char *group_name, int dummy)
 	memset(&ifgr, 0, sizeof(ifgr));
 	strlcpy(ifgr.ifgr_name, name, IFNAMSIZ);
 
-	if (group_name[0] && isdigit(group_name[strlen(group_name) - 1]))
+	if (group_name[0] &&
+	    isdigit((unsigned char)group_name[strlen(group_name) - 1]))
 		errx(1, "unsetifgroup: group names may not end in a digit");
 
 	if (strlcpy(ifgr.ifgr_group, group_name, IFNAMSIZ) >= IFNAMSIZ)
@@ -1556,7 +1559,7 @@ setifnwkey(const char *val, int d)
 		goto set_nwkey;
 	} else {
  set_nwkey:
-		if (isdigit(val[0]) && val[1] == ':') {
+		if (isdigit((unsigned char)val[0]) && val[1] == ':') {
 			/* specifying a full set of four keys */
 			nwkey.i_defkid = val[0] - '0';
 			val += 2;
@@ -2045,7 +2048,7 @@ ieee80211_status(void)
 			/* check extra ambiguity with keywords */
 			if (!nwkey_verbose) {
 				if (nwkey.i_key[0].i_keylen >= 2 &&
-				    isdigit(nwkey.i_key[0].i_keydat[0]) &&
+				    isdigit((unsigned char)nwkey.i_key[0].i_keydat[0]) &&
 				    nwkey.i_key[0].i_keydat[1] == ':')
 					nwkey_verbose = 1;
 				else if (nwkey.i_key[0].i_keylen >= 7 &&
@@ -2209,7 +2212,8 @@ ieee80211_printnode(struct ieee80211_nodereq *nr)
 {
 	int len;
 
-	if (nr->nr_flags & IEEE80211_NODEREQ_AP) {
+	if (nr->nr_flags & IEEE80211_NODEREQ_AP ||
+	    nr->nr_capinfo & IEEE80211_CAPINFO_IBSS) {
 		len = nr->nr_nwid_len;
 		if (len > IEEE80211_NWID_LEN)
 			len = IEEE80211_NWID_LEN;
@@ -2218,12 +2222,12 @@ ieee80211_printnode(struct ieee80211_nodereq *nr)
 		putchar(' ');
 
 		printf("chan %u ", nr->nr_channel);
-	}
 
-	if (nr->nr_flags & IEEE80211_NODEREQ_AP)
 		printf("bssid %s ",
 		    ether_ntoa((struct ether_addr*)nr->nr_bssid));
-	else
+	}
+
+	if ((nr->nr_flags & IEEE80211_NODEREQ_AP) == 0)
 		printf("lladdr %s ",
 		    ether_ntoa((struct ether_addr*)nr->nr_macaddr));
 
@@ -2461,7 +2465,7 @@ settimeslot(const char *val, int d)
 #define RANGE_CHANNEL	0x2
 #define ALL_CHANNELS	0xFFFFFFFF
 	unsigned long	ts_map = 0;
-	char	*ptr = (char*)val;
+	char		*ptr = (char *)val;
 	int		ts_flag = 0;
 	int		ts = 0, ts_start = 0;
 
@@ -2469,7 +2473,7 @@ settimeslot(const char *val, int d)
 		ts_map = ALL_CHANNELS;
 	} else {
 		while (*ptr != '\0') {
-			if (isdigit(*ptr)) {
+			if (isdigit((unsigned char)*ptr)) {
 				ts = strtoul(ptr, &ptr, 10);
 				ts_flag |= SINGLE_CHANNEL;
 			} else {
@@ -4556,10 +4560,10 @@ in_getprefix(const char *plen, int which)
  * Print a value a la the %b format of the kernel's printf
  */
 void
-printb(char *s, unsigned int v, char *bits)
+printb(char *s, unsigned int v, unsigned char *bits)
 {
 	int i, any = 0;
-	char c;
+	unsigned char c;
 
 	if (bits && *bits == 8)
 		printf("%s=%o", s, v);
@@ -4588,10 +4592,10 @@ printb(char *s, unsigned int v, char *bits)
  * A simple version of printb for status output
  */
 void
-printb_status(unsigned short v, char *bits)
+printb_status(unsigned short v, unsigned char *bits)
 {
 	int i, any = 0;
-	char c;
+	unsigned char c;
 
 	if (bits) {
 		bits++;

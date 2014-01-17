@@ -1,4 +1,4 @@
-/*	$OpenBSD: dhcpd.h,v 1.124 2013/11/19 15:12:23 mikeb Exp $	*/
+/*	$OpenBSD: dhcpd.h,v 1.130 2014/01/13 02:38:52 krw Exp $	*/
 
 /*
  * Copyright (c) 2004 Henning Brauer <henning@openbsd.org>
@@ -89,14 +89,8 @@ struct option_data {
 };
 
 struct reject_elem {
-	struct reject_elem	*next;
+	TAILQ_ENTRY(reject_elem) next;
 	struct in_addr		 addr;
-};
-
-struct hardware {
-	u_int8_t htype;
-	u_int8_t hlen;
-	u_int8_t haddr[16];
 };
 
 struct client_lease {
@@ -148,7 +142,7 @@ struct client_config {
 	time_t			 backoff_cutoff;
 	enum { IGNORE, ACCEPT, PREFER }
 				 bootp_policy;
-	struct reject_elem	*reject_list;
+	TAILQ_HEAD(, reject_elem) reject_list;
 	char			*resolv_tail;
 };
 
@@ -172,7 +166,7 @@ struct client_state {
 };
 
 struct interface_info {
-	struct hardware	 hw_address;
+	struct ether_addr	hw_address;
 	struct in_addr	 primary_address;
 	char		 name[IFNAMSIZ];
 	int		 rfdesc;
@@ -216,17 +210,18 @@ extern volatile sig_atomic_t quit;
 /* options.c */
 int cons_options(struct option_data *);
 char *pretty_print_option(unsigned int, struct option_data *, int);
-void do_packet(unsigned int, struct in_addr, struct hardware *);
+int pretty_print_string(unsigned char *, size_t, unsigned char *, size_t, int);
+void do_packet(unsigned int, struct in_addr, struct ether_addr *);
 
 /* errwarn.c */
 extern int warnings_occurred;
 void error(char *, ...) __attribute__ ((__format__ (__printf__, 1, 2)));
-int warning(char *, ...) __attribute__ ((__format__ (__printf__, 1, 2)));
-int note(char *, ...) __attribute__ ((__format__ (__printf__, 1, 2)));
+void warning(char *, ...) __attribute__ ((__format__ (__printf__, 1, 2)));
+void note(char *, ...) __attribute__ ((__format__ (__printf__, 1, 2)));
 #ifdef DEBUG
-int debug(char *, ...) __attribute__ ((__format__ (__printf__, 1, 2)));
+void debug(char *, ...) __attribute__ ((__format__ (__printf__, 1, 2)));
 #endif
-int parse_warn(char *);
+void parse_warn(char *);
 
 /* conflex.c */
 extern int lexline, lexchar;
@@ -240,7 +235,7 @@ void skip_to_semi(FILE *);
 int parse_semi(FILE *);
 char *parse_string(FILE *);
 int parse_ip_addr(FILE *, struct in_addr *);
-void parse_hardware_param(FILE *, struct hardware *);
+void parse_hardware_param(FILE *, struct ether_addr *);
 void parse_lease_time(FILE *, time_t *);
 void convert_num(unsigned char *, char *, int, int);
 time_t parse_date(FILE *);
@@ -248,8 +243,8 @@ time_t parse_date(FILE *);
 /* bpf.c */
 void if_register_send(void);
 void if_register_receive(void);
-ssize_t send_packet(struct in_addr, struct sockaddr_in *, struct hardware *);
-ssize_t receive_packet(struct sockaddr_in *, struct hardware *);
+ssize_t send_packet(struct in_addr, struct sockaddr_in *, struct ether_addr *);
+ssize_t receive_packet(struct sockaddr_in *, struct ether_addr *);
 
 /* dispatch.c */
 void discover_interface(void);
@@ -290,15 +285,15 @@ void free_client_lease(struct client_lease *);
 void routehandler(void);
 
 /* packet.c */
-void assemble_hw_header(unsigned char *, int *, struct hardware *);
-void assemble_udp_ip_header(unsigned char *, int *, u_int32_t, u_int32_t,
-    unsigned int, unsigned char *, int);
-ssize_t decode_hw_header(unsigned char *, int, struct hardware *);
+void assemble_eh_header(struct ether_header *, struct ether_addr *);
+ssize_t decode_hw_header(unsigned char *, int, struct ether_addr *);
 ssize_t decode_udp_ip_header(unsigned char *, int, struct sockaddr_in *,
     int);
+u_int32_t checksum(unsigned char *, unsigned, u_int32_t);
+u_int32_t wrapsum(u_int32_t);
 
 /* clparse.c */
-int read_client_conf(void);
+void read_client_conf(void);
 void read_client_leases(void);
 
 /* kroute.c */

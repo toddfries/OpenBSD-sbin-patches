@@ -1,4 +1,4 @@
-/*	$OpenBSD: dhclient.c,v 1.268 2013/11/20 17:22:46 deraadt Exp $	*/
+/*	$OpenBSD: dhclient.c,v 1.282 2014/01/16 21:41:22 tobias Exp $	*/
 
 /*
  * Copyright 2004 Henning Brauer <henning@openbsd.org>
@@ -57,7 +57,9 @@
 #include "privsep.h"
 
 #include <sys/ioctl.h>
+#include <sys/uio.h>
 
+#include <limits.h>
 #include <poll.h>
 #include <pwd.h>
 #include <resolv.h>
@@ -204,7 +206,7 @@ routehandler(void)
 	struct in_addr a, b;
 	ssize_t n;
 	int linkstat, rslt;
-	struct hardware hw;
+	struct ether_addr hw;
 	struct rt_msghdr *rtm;
 	struct if_msghdr *ifm;
 	struct ifa_msghdr *ifam;
@@ -455,6 +457,7 @@ main(int argc, char *argv[])
 	config = calloc(1, sizeof(*config));
 	if (config == NULL)
 		error("config calloc");
+	TAILQ_INIT(&config->reject_list);
 
 	get_ifname(argv[0]);
 	if (path_dhclient_db == NULL && asprintf(&path_dhclient_db, "%s.%s",
@@ -492,7 +495,7 @@ main(int argc, char *argv[])
 		error("Cannot stat /etc/resolv.conf.tail: %s",
 		    strerror(errno));
 	} else {
-		if (sb.st_size > 0) {
+		if (sb.st_size > 0 && sb.st_size < SIZE_MAX) {
 			config->resolv_tail = calloc(1, sb.st_size + 1);
 			if (config->resolv_tail == NULL) {
 				error("no memory for resolv.conf.tail "
@@ -788,7 +791,7 @@ void
 bind_lease(void)
 {
 	struct in_addr gateway, mask;
-	struct option_data *options;
+	struct option_data *options, *opt;
 	struct client_lease *lease;
 	time_t cur_time;
 
@@ -843,6 +846,10 @@ bind_lease(void)
 	if (client->new->rebind < cur_time)
 		client->new->rebind = TIME_MAX;
 
+	lease->expiry = client->new->expiry;
+	lease->renewal = client->new->renewal;
+	lease->rebind = client->new->rebind;
+
 	/*
 	 * A duplicate lease once we are responsible & S_RENEWING means we don't
 	 * need to change the interface, routing table or resolv.conf.
@@ -861,9 +868,11 @@ bind_lease(void)
 	delete_addresses(ifi->name, ifi->rdomain);
 	flush_routes(ifi->name, ifi->rdomain);
 
-	memset(&mask, 0, sizeof(mask));
-	memcpy(&mask.s_addr, options[DHO_SUBNET_MASK].data,
-	    options[DHO_SUBNET_MASK].len);
+	opt = &options[DHO_SUBNET_MASK];
+	if (opt->len == sizeof(mask))
+		mask.s_addr = ((struct in_addr *)opt->data)->s_addr;
+	else
+		mask.s_addr = INADDR_ANY;
 
         /*
 	 * Add address and default route last, so we know when the binding
@@ -874,11 +883,25 @@ bind_lease(void)
 		add_classless_static_routes(ifi->rdomain,
 		    &options[DHO_CLASSLESS_STATIC_ROUTES]);
 	} else {
-		if (options[DHO_ROUTERS].len) {
-			memset(&gateway, 0, sizeof(gateway));
+		opt = &options[DHO_ROUTERS];
+		if (opt->len >= sizeof(gateway)) {
 			/* XXX Only use FIRST router address for now. */
-			memcpy(&gateway.s_addr, options[DHO_ROUTERS].data,
-			    options[DHO_ROUTERS].len);
+			gateway.s_addr = ((struct in_addr *)opt->data)->s_addr;
+
+			/*
+			 * If we were given a /32 IP assignment, then make sure
+			 * the gateway address is routable with equivalent of
+			 *
+			 *     route add -net $gw -netmask 255.255.255.255 \
+			 *         -cloning -iface $addr
+			 */
+			if (mask.s_addr == INADDR_BROADCAST) {
+				add_route(ifi->rdomain, gateway, mask,
+				    client->new->address,
+				    RTA_DST | RTA_NETMASK | RTA_GATEWAY,
+				    RTF_CLONING | RTF_STATIC);
+			}
+
 			add_default_route(ifi->rdomain, client->new->address,
 			    gateway);
 		}
@@ -922,15 +945,19 @@ newlease:
 void
 state_bound(void)
 {
+	struct option_data *opt;
+	struct in_addr *dest;
+
 	client->xid = arc4random();
 	make_request(client->active);
 
-	if (client->active->options[DHO_DHCP_SERVER_IDENTIFIER].len == 4) {
-		memcpy(&client->destination.s_addr,
-		    client->active->options[DHO_DHCP_SERVER_IDENTIFIER].data,
-		    client->active->options[DHO_DHCP_SERVER_IDENTIFIER].len);
-	} else
-		client->destination.s_addr = INADDR_BROADCAST;
+	dest = &client->destination;
+	opt = &client->active->options[DHO_DHCP_SERVER_IDENTIFIER];
+
+	if (opt->len == sizeof(*dest))
+		dest->s_addr = ((struct in_addr *)opt->data)->s_addr;
+	else
+		dest->s_addr = INADDR_BROADCAST;
 
 	client->first_sending = time(NULL);
 	client->interval = 0;
@@ -1065,12 +1092,10 @@ packet_to_lease(struct in_addr client_addr, struct option_data *options)
 		}
 	}
 
-	memcpy(&lease->address.s_addr, &client->packet.yiaddr,
-	    sizeof(in_addr_t));
+	lease->address.s_addr = client->packet.yiaddr.s_addr;
 
 	/* Save the siaddr (a.k.a. next-server) info. */
-	memcpy(&lease->next_server.s_addr, &client->packet.siaddr,
-	    sizeof(in_addr_t));
+	lease->next_server.s_addr = client->packet.siaddr.s_addr;
 
 	/* If the server name was filled out, copy it. */
 	if ((!lease->options[DHO_DHCP_OPTION_OVERLOAD].len ||
@@ -1461,18 +1486,20 @@ make_discover(struct client_lease *lease)
 		client->bootrequest_packet_length = BOOTP_MIN_LEN;
 
 	packet->op = BOOTREQUEST;
-	packet->htype = ifi->hw_address.htype;
-	packet->hlen = ifi->hw_address.hlen;
+	packet->htype = HTYPE_ETHER ;
+	packet->hlen = ETHER_ADDR_LEN;
 	packet->hops = 0;
 	packet->xid = client->xid;
 	packet->secs = 0; /* filled in by send_discover. */
 	packet->flags = 0;
 
-	memset(&packet->ciaddr, 0, sizeof(packet->ciaddr));
-	memset(&packet->yiaddr, 0, sizeof(packet->yiaddr));
-	memset(&packet->siaddr, 0, sizeof(packet->siaddr));
-	memset(&packet->giaddr, 0, sizeof(packet->giaddr));
-	memcpy(&packet->chaddr, ifi->hw_address.haddr, ifi->hw_address.hlen);
+	packet->ciaddr.s_addr = INADDR_ANY;
+	packet->yiaddr.s_addr = INADDR_ANY;
+	packet->siaddr.s_addr = INADDR_ANY;
+	packet->giaddr.s_addr = INADDR_ANY;
+
+	memcpy(&packet->chaddr, ifi->hw_address.ether_addr_octet,
+	    ETHER_ADDR_LEN);
 }
 
 void
@@ -1530,8 +1557,8 @@ make_request(struct client_lease * lease)
 		client->bootrequest_packet_length = BOOTP_MIN_LEN;
 
 	packet->op = BOOTREQUEST;
-	packet->htype = ifi->hw_address.htype;
-	packet->hlen = ifi->hw_address.hlen;
+	packet->htype = HTYPE_ETHER ;
+	packet->hlen = ETHER_ADDR_LEN;
 	packet->hops = 0;
 	packet->xid = client->xid;
 	packet->secs = 0; /* Filled in by send_request. */
@@ -1543,17 +1570,17 @@ make_request(struct client_lease * lease)
 	 */
 	if (client->state == S_BOUND ||
 	    client->state == S_RENEWING ||
-	    client->state == S_REBINDING) {
-		memcpy(&packet->ciaddr, &lease->address.s_addr,
-		    sizeof(in_addr_t));
-	} else {
-		memset(&packet->ciaddr, 0, sizeof(packet->ciaddr));
-	}
+	    client->state == S_REBINDING)
+		packet->ciaddr.s_addr = lease->address.s_addr;
+	else
+		packet->ciaddr.s_addr = INADDR_ANY;
 
-	memset(&packet->yiaddr, 0, sizeof(packet->yiaddr));
-	memset(&packet->siaddr, 0, sizeof(packet->siaddr));
-	memset(&packet->giaddr, 0, sizeof(packet->giaddr));
-	memcpy(&packet->chaddr, ifi->hw_address.haddr, ifi->hw_address.hlen);
+	packet->yiaddr.s_addr = INADDR_ANY;
+	packet->siaddr.s_addr = INADDR_ANY;
+	packet->giaddr.s_addr = INADDR_ANY;
+
+	memcpy(&packet->chaddr, ifi->hw_address.ether_addr_octet,
+	    ETHER_ADDR_LEN);
 }
 
 void
@@ -1598,19 +1625,21 @@ make_decline(struct client_lease *lease)
 		client->bootrequest_packet_length = BOOTP_MIN_LEN;
 
 	packet->op = BOOTREQUEST;
-	packet->htype = ifi->hw_address.htype;
-	packet->hlen = ifi->hw_address.hlen;
+	packet->htype = HTYPE_ETHER ;
+	packet->hlen = ETHER_ADDR_LEN;
 	packet->hops = 0;
 	packet->xid = client->xid;
 	packet->secs = 0; /* Filled in by send_request. */
 	packet->flags = 0;
 
 	/* ciaddr must always be zero. */
-	memset(&packet->ciaddr, 0, sizeof(packet->ciaddr));
-	memset(&packet->yiaddr, 0, sizeof(packet->yiaddr));
-	memset(&packet->siaddr, 0, sizeof(packet->siaddr));
-	memset(&packet->giaddr, 0, sizeof(packet->giaddr));
-	memcpy(&packet->chaddr, ifi->hw_address.haddr, ifi->hw_address.hlen);
+	packet->ciaddr.s_addr = INADDR_ANY;
+	packet->yiaddr.s_addr = INADDR_ANY;
+	packet->siaddr.s_addr = INADDR_ANY;
+	packet->giaddr.s_addr = INADDR_ANY;
+
+	memcpy(&packet->chaddr, ifi->hw_address.ether_addr_octet,
+	    ETHER_ADDR_LEN);
 }
 
 void
@@ -1734,15 +1763,36 @@ lease_as_string(char *type, struct client_lease *lease)
 	sz -= rslt;
 
 	if (lease->filename) {
-		rslt = snprintf(p, sz, "  filename \"%s\";\n", lease->filename);
+		rslt = snprintf(p, sz, "  filename ");
+		if (rslt == -1 || rslt >= sz)
+			return (NULL);
+		p += rslt;
+		sz -= rslt;
+		rslt = pretty_print_string(p, sz, lease->filename,
+		    strlen(lease->filename), 1);
+		if (rslt == -1 || rslt >= sz)
+			return (NULL);
+		p += rslt;
+		sz -= rslt;
+		rslt = snprintf(p, sz, ";\n");
 		if (rslt == -1 || rslt >= sz)
 			return (NULL);
 		p += rslt;
 		sz -= rslt;
 	}
 	if (lease->server_name) {
-		rslt = snprintf(p, sz, "  server-name \"%s\";\n",
-		    lease->server_name);
+		rslt = snprintf(p, sz, "  server-name ");
+		if (rslt == -1 || rslt >= sz)
+			return (NULL);
+		p += rslt;
+		sz -= rslt;
+		rslt = pretty_print_string(p, sz, lease->server_name,
+		    strlen(lease->server_name), 1);
+		if (rslt == -1 || rslt >= sz)
+			return (NULL);
+		p += rslt;
+		sz -= rslt;
+		rslt = snprintf(p, sz, ";\n");
 		if (rslt == -1 || rslt >= sz)
 			return (NULL);
 		p += rslt;
@@ -2228,6 +2278,8 @@ clone_lease(struct client_lease *oldlease)
 	newlease->rebind = oldlease->rebind;
 	newlease->is_static = oldlease->is_static;
 	newlease->is_bootp = oldlease->is_bootp;
+	newlease->address = oldlease->address;
+	newlease->next_server = oldlease->next_server;
 
 	if (oldlease->server_name) {
 		newlease->server_name = strdup(oldlease->server_name);
@@ -2237,6 +2289,11 @@ clone_lease(struct client_lease *oldlease)
 	if (oldlease->filename) {
 		newlease->filename = strdup(oldlease->filename);
 		if (newlease->filename == NULL)
+			goto cleanup;
+	}
+	if (oldlease->resolv_conf) {
+		newlease->resolv_conf = strdup(oldlease->resolv_conf);
+		if (newlease->resolv_conf == NULL)
 			goto cleanup;
 	}
 
@@ -2316,31 +2373,33 @@ void
 write_file(char *path, int flags, mode_t mode, uid_t uid, gid_t gid,
     u_int8_t *contents, size_t sz)
 {
-	struct imsg_write_file *imsg;
+	struct iovec iov[2];
+	struct imsg_write_file imsg;
 	size_t rslt;
 
-	imsg = calloc(1, sizeof(*imsg) + sz);
-	if (imsg == NULL)
-		error("no memory for imsg_write_file");
-	imsg->rdomain = ifi->rdomain;
+	memset(&imsg, 0, sizeof(imsg));
 
-	rslt = strlcpy(imsg->path, path, MAXPATHLEN);
-	if (rslt >= MAXPATHLEN) {
-		free(imsg);
+	rslt = strlcpy(imsg.path, path, sizeof(imsg.path));
+	if (rslt >= sizeof(imsg.path)) {
 		warning("write_file: path too long (%zu)", rslt);
 		return;
 	}
-	memcpy(imsg->contents, contents, sz);
-	imsg->len = sz;
-	imsg->flags = flags;
-	imsg->mode = mode;
-	imsg->uid = uid;
-	imsg->gid = gid;
 
-	rslt = imsg_compose(unpriv_ibuf, IMSG_WRITE_FILE, 0, 0, -1, imsg,
-	    sizeof(*imsg) + sz);
+	imsg.rdomain = ifi->rdomain;
+	imsg.len = sz;
+	imsg.flags = flags;
+	imsg.mode = mode;
+	imsg.uid = uid;
+	imsg.gid = gid;
+
+	iov[0].iov_base = &imsg;
+	iov[0].iov_len = sizeof(imsg);
+	iov[1].iov_base = contents;
+	iov[1].iov_len = sz;
+
+	rslt = imsg_composev(unpriv_ibuf, IMSG_WRITE_FILE, 0, 0, -1, iov, 2);
 	if (rslt == -1)
-		warning("write_file: imsg_compose: %s", strerror(errno));
+		warning("write_file: imsg_composev: %s", strerror(errno));
 
 	/* Do flush to maximize chances of keeping file current. */
 	rslt = imsg_flush(unpriv_ibuf);
@@ -2364,7 +2423,7 @@ priv_write_file(struct imsg_write_file *imsg)
 		return;
 	}
 
-	n = write(fd, imsg->contents, imsg->len);
+	n = write(fd, imsg+1, imsg->len);
 	if (n == -1)
 		note("Couldn't write contents to '%s': %s", imsg->path,
 		    strerror(errno));
@@ -2415,20 +2474,19 @@ void
 add_static_routes(int rdomain, struct option_data *static_routes)
 {
 	struct in_addr		 dest, netmask, gateway;
-	u_int8_t		 *addr;
+	struct in_addr		 *addr;
 	int			 i;
 
-	memset(&netmask, 0, sizeof(netmask));	/* Not used for CLASSFULL! */
+	netmask.s_addr = INADDR_ANY;	/* Not used for CLASSFULL! */
 
-	for (i = 0; (i + 7) < static_routes->len; i += 8) {
-		addr = &static_routes->data[i];
-		memset(&dest, 0, sizeof(dest));
-		memset(&gateway, 0, sizeof(gateway));
-
-		memcpy(&dest.s_addr, addr, 4);
-		if (dest.s_addr == INADDR_ANY)
+	for (i = 0; (i + 2*sizeof(*addr)) <= static_routes->len;
+	    i += 2*sizeof(*addr)) {
+		addr = (struct in_addr *)&static_routes->data[i];
+		if (addr->s_addr == INADDR_ANY)
 			continue; /* RFC 2132 says 0.0.0.0 is not allowed. */
-		memcpy(&gateway.s_addr, addr+4, 4);
+
+		dest.s_addr = addr->s_addr;
+		gateway.s_addr = (addr+1)->s_addr;
 
 		/* XXX Order implies priority but we're ignoring that. */
 		add_route(rdomain, dest, netmask, gateway,
@@ -2436,30 +2494,34 @@ add_static_routes(int rdomain, struct option_data *static_routes)
 	}
 }
 
-void add_classless_static_routes(int rdomain,
-    struct option_data *classless_static_routes)
+void add_classless_static_routes(int rdomain, struct option_data *opt)
 {
 	struct in_addr	 dest, netmask, gateway;
 	int		 bits, bytes, i;
 
 	i = 0;
-	while (i < classless_static_routes->len) {
-		bits = classless_static_routes->data[i];
+	while (i < opt->len) {
+		bits = opt->data[i++];
 		bytes = (bits + 7) / 8;
-		i++;
 
-		memset(&netmask, 0, sizeof(netmask));
+		if (bytes > sizeof(netmask))
+			return;
+		else if (i + bytes > opt->len)
+			return;
+
 		if (bits)
 			netmask.s_addr = htonl(0xffffffff << (32 - bits));
+		else
+			netmask.s_addr = INADDR_ANY;
 
-		memset(&dest, 0, sizeof(dest));
-		memcpy(&dest, &classless_static_routes->data[i], bytes);
+		memcpy(&dest, &opt->data[i], bytes);
 		dest.s_addr = dest.s_addr & netmask.s_addr;
 		i += bytes;
 
-		memset(&gateway, 0, sizeof(gateway));
-		memcpy(&gateway, &classless_static_routes->data[i], 4);
-		i += 4;
+		if (i + sizeof(gateway) > opt->len)
+			return;
+		memcpy(&gateway, &opt->data[i], sizeof(gateway));
+		i += sizeof(gateway);
 
 		if (gateway.s_addr == INADDR_ANY)
 			continue; /* OBSD TCP/IP doesn't support this. */

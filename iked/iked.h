@@ -1,4 +1,4 @@
-/*	$OpenBSD: iked.h,v 1.57 2013/11/14 12:38:20 markus Exp $	*/
+/*	$OpenBSD: iked.h,v 1.62 2013/12/09 15:22:32 markus Exp $	*/
 
 /*
  * Copyright (c) 2010-2013 Reyk Floeter <reyk@openbsd.org>
@@ -241,6 +241,8 @@ struct iked_policy {
 
 	int				 pol_refcnt;
 
+	u_int8_t			 pol_certreqtype;
+
 	int				 pol_af;
 	u_int8_t			 pol_saproto;
 	u_int				 pol_ipproto;
@@ -336,8 +338,9 @@ struct iked_sahdr {
 
 struct iked_sa {
 	struct iked_sahdr		 sa_hdr;
-	u_int32_t			 sa_msgid;
-	u_int32_t			 sa_reqid;
+	u_int32_t			 sa_msgid;	/* Last request rcvd */
+	int				 sa_msgid_set;	/* msgid initialized */
+	u_int32_t			 sa_reqid;	/* Next request sent */
 
 	int				 sa_type;
 #define IKED_SATYPE_LOOKUP		 0		/* Used for lookup */
@@ -815,7 +818,7 @@ void	 proc_flush_imsg(struct iked *, enum privsep_procid);
 void	 socket_set_blockmode(int, enum blockmodes);
 int	 socket_af(struct sockaddr *, in_port_t);
 in_port_t
-	 socket_getport(struct sockaddr_storage *);
+	 socket_getport(struct sockaddr *);
 int	 socket_getaddr(int, struct sockaddr_storage *);
 int	 socket_bypass(int, struct sockaddr *);
 int	 udp_bind(struct sockaddr *, in_port_t);
@@ -829,7 +832,7 @@ void	 lc_string(char *);
 void	 print_hex(u_int8_t *, off_t, size_t);
 void	 print_hexval(u_int8_t *, off_t, size_t);
 const char *
-	 print_bits(u_short, char *);
+	 print_bits(u_short, u_char *);
 int	 sockaddr_cmp(struct sockaddr *, struct sockaddr *, int);
 u_int8_t mask2prefixlen(struct sockaddr *);
 u_int8_t mask2prefixlen6(struct sockaddr *);
@@ -838,7 +841,7 @@ struct in6_addr *
 u_int32_t
 	 prefixlen2mask(u_int8_t);
 const char *
-	 print_host(struct sockaddr_storage *, char *, size_t);
+	 print_host(struct sockaddr *, char *, size_t);
 char	*get_string(u_int8_t *, size_t);
 const char *
 	 print_proto(u_int8_t);
