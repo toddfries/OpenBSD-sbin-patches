@@ -1,4 +1,4 @@
-/*	$OpenBSD: dhclient.c,v 1.282 2014/01/16 21:41:22 tobias Exp $	*/
+/*	$OpenBSD: dhclient.c,v 1.287 2014/01/21 05:17:45 krw Exp $	*/
 
 /*
  * Copyright 2004 Henning Brauer <henning@openbsd.org>
@@ -479,7 +479,7 @@ main(int argc, char *argv[])
 	/* Put us into the correct rdomain */
 	ifi->rdomain = get_rdomain(ifi->name);
 	if (setrtable(ifi->rdomain) == -1)
-		error("setting routing table to %d: '%s'", ifi->rdomain,
+		error("setting routing table to %u: '%s'", ifi->rdomain,
 		    strerror(errno));
 
 	read_client_conf();
@@ -563,7 +563,8 @@ main(int argc, char *argv[])
 		error("no memory for unpriv_ibuf");
 	imsg_init(unpriv_ibuf, socket_fd[1]);
 
-	if ((fd = open(path_dhclient_db, O_RDONLY|O_EXLOCK|O_CREAT, 0)) == -1)
+	if ((fd = open(path_dhclient_db,
+	    O_RDONLY|O_EXLOCK|O_CREAT|O_NOFOLLOW, 0)) == -1)
 		error("can't open and lock %s: %s", path_dhclient_db,
 		    strerror(errno));
 	read_client_leases();
@@ -882,6 +883,9 @@ bind_lease(void)
 	if (options[DHO_CLASSLESS_STATIC_ROUTES].len) {
 		add_classless_static_routes(ifi->rdomain,
 		    &options[DHO_CLASSLESS_STATIC_ROUTES]);
+	} else if (options[DHO_CLASSLESS_MS_STATIC_ROUTES].len) {
+		add_classless_static_routes(ifi->rdomain,
+		    &options[DHO_CLASSLESS_MS_STATIC_ROUTES]);
 	} else {
 		opt = &options[DHO_ROUTERS];
 		if (opt->len >= sizeof(gateway)) {
@@ -1224,7 +1228,7 @@ send_discover(void)
 		client->bootrequest_packet.secs = htons(65535);
 	client->secs = client->bootrequest_packet.secs;
 
-	note("DHCPDISCOVER on %s to %s port %d interval %lld",
+	note("DHCPDISCOVER on %s to %s port %hu interval %lld",
 	    ifi->name, inet_ntoa(sockaddr_broadcast.sin_addr),
 	    ntohs(sockaddr_broadcast.sin_port),
 	    (long long)client->interval);
@@ -1421,7 +1425,7 @@ send_request(void)
 			client->bootrequest_packet.secs = htons(65535);
 	}
 
-	note("DHCPREQUEST on %s to %s port %d", ifi->name,
+	note("DHCPREQUEST on %s to %s port %hu", ifi->name,
 	    inet_ntoa(destination.sin_addr), ntohs(destination.sin_port));
 
 	send_packet(from, &destination, NULL);
@@ -1432,7 +1436,7 @@ send_request(void)
 void
 send_decline(void)
 {
-	note("DHCPDECLINE on %s to %s port %d", ifi->name,
+	note("DHCPDECLINE on %s to %s port %hu", ifi->name,
 	    inet_ntoa(sockaddr_broadcast.sin_addr),
 	    ntohs(sockaddr_broadcast.sin_port));
 
@@ -1729,7 +1733,7 @@ rewrite_option_db(struct client_lease *offered, struct client_lease *effective)
 		warning("cannot make effective lease into string");
 
 	write_file(path_option_db,
-	    O_WRONLY | O_CREAT | O_TRUNC | O_SYNC | O_EXLOCK,
+	    O_WRONLY | O_CREAT | O_TRUNC | O_SYNC | O_EXLOCK | O_NOFOLLOW,
 	    S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH, 0, 0, db, strlen(db));
 }
 
@@ -1912,7 +1916,7 @@ option_as_string(unsigned int code, unsigned char *data, int len)
 	unsigned char *dp = data;
 
 	if (code > 255)
-		error("option_as_string: bad code %d", code);
+		error("option_as_string: bad code %u", code);
 
 	for (; dp < data + len; dp++) {
 		if (!isascii(*dp) || !isprint(*dp)) {
@@ -2173,6 +2177,21 @@ apply_defaults(struct client_lease *lease)
 	newlease = clone_lease(lease);
 	if (newlease == NULL)
 		error("Unable to clone lease");
+
+	if (config->filename) {
+		if (lease->filename)
+			free(lease->filename);
+		lease->filename = strdup(config->filename);
+	}
+	if (config->server_name) {
+		if (lease->server_name)
+			free(lease->server_name);
+		lease->server_name = strdup(config->server_name);
+	}
+	if (config->address.s_addr != INADDR_ANY)
+		lease->address.s_addr = config->address.s_addr;
+	if (config->next_server.s_addr != INADDR_ANY)
+		lease->next_server.s_addr = config->next_server.s_addr;
 
 	for (i = 0; i < 256; i++) {
 		for (j = 0; j < config->ignored_option_count; j++) {

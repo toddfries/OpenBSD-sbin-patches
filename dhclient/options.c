@@ -1,4 +1,4 @@
-/*	$OpenBSD: options.c,v 1.65 2013/12/30 03:36:17 krw Exp $	*/
+/*	$OpenBSD: options.c,v 1.67 2014/01/21 03:07:50 krw Exp $	*/
 
 /* DHCP options parsing and reassembly. */
 
@@ -323,16 +323,17 @@ pretty_print_option(unsigned int code, struct option_data *option,
 		case 'L':
 			hunksize += 4;
 			break;
-		case 's':
 		case 'S':
 			hunksize += 2;
 			break;
-		case 'b':
 		case 'B':
 		case 'f':
 			hunksize++;
 			break;
 		case 'e':
+			break;
+		case 'C':
+			hunksize += 5;
 			break;
 		default:
 			warning("%s: garbage in format string: %s",
@@ -389,27 +390,17 @@ pretty_print_option(unsigned int code, struct option_data *option,
 				dp += 4;
 				break;
 			case 'L':
-				opcount = snprintf(op, opleft, "%ld",
+				opcount = snprintf(op, opleft, "%lu",
 				    (unsigned long)getULong(dp));
 				dp += 4;
 				break;
-			case 's':
-				opcount = snprintf(op, opleft, "%d",
-				    getShort(dp));
-				dp += 2;
-				break;
 			case 'S':
-				opcount = snprintf(op, opleft, "%d",
+				opcount = snprintf(op, opleft, "%u",
 				    getUShort(dp));
 				dp += 2;
 				break;
-			case 'b':
-				opcount = snprintf(op, opleft, "%d",
-				    *(char *)dp);
-				dp++;
-				break;
 			case 'B':
-				opcount = snprintf(op, opleft, "%d", *dp);
+				opcount = snprintf(op, opleft, "%u", *dp);
 				dp++;
 				break;
 			case 'X':
@@ -421,6 +412,15 @@ pretty_print_option(unsigned int code, struct option_data *option,
 				    *dp ? "true" : "false");
 				dp++;
 				break;
+			case 'C':
+				memset(&foo, 0, sizeof(foo));
+				memcpy(&foo.s_addr, dp+1, (*dp + 7) / 8); 
+				opcount = snprintf(op, opleft, "%s/%u",
+				    inet_ntoa(foo), *dp); 
+				if (opcount >= opleft || opcount == -1)
+					goto toobig;
+				dp += 1 + (*dp + 7) / 8;
+ 				break;
 			default:
 				warning("Unexpected format code %c", fmtbuf[j]);
 				goto toobig;

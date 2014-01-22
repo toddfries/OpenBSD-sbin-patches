@@ -1,4 +1,4 @@
-/*	$OpenBSD: dhcpd.h,v 1.130 2014/01/13 02:38:52 krw Exp $	*/
+/*	$OpenBSD: dhcpd.h,v 1.135 2014/01/21 05:17:45 krw Exp $	*/
 
 /*
  * Copyright (c) 2004 Henning Brauer <henning@openbsd.org>
@@ -126,6 +126,8 @@ struct client_config {
 		ACTION_APPEND
 	} default_actions[256];
 
+	struct in_addr		 address;
+	struct in_addr		 next_server;
 	struct option_data	 send_options[256];
 	u_int8_t		 required_options[256];
 	u_int8_t		 requested_options[256];
@@ -144,6 +146,8 @@ struct client_config {
 				 bootp_policy;
 	TAILQ_HEAD(, reject_elem) reject_list;
 	char			*resolv_tail;
+	char			*filename;
+	char			*server_name;
 };
 
 struct client_state {
@@ -235,9 +239,11 @@ void skip_to_semi(FILE *);
 int parse_semi(FILE *);
 char *parse_string(FILE *);
 int parse_ip_addr(FILE *, struct in_addr *);
-void parse_hardware_param(FILE *, struct ether_addr *);
+int parse_cidr(FILE *, unsigned char *);
+void parse_ethernet(FILE *, struct ether_addr *);
 void parse_lease_time(FILE *, time_t *);
-void convert_num(unsigned char *, char *, int, int);
+int parse_decimal(FILE *, unsigned char *, char);
+int parse_hex(FILE *, unsigned char *);
 time_t parse_date(FILE *);
 
 /* bpf.c */
@@ -266,9 +272,6 @@ int32_t getLong(unsigned char *);
 u_int16_t getUShort(unsigned char *);
 int16_t getShort(unsigned char *);
 void putULong(unsigned char *, u_int32_t);
-void putLong(unsigned char *, int32_t);
-void putUShort(unsigned char *, unsigned int);
-void putShort(unsigned char *, int);
 
 /* dhclient.c */
 extern char *path_dhclient_conf;

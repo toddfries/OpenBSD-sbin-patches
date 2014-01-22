@@ -1,4 +1,4 @@
-/*	$OpenBSD: parse.c,v 1.31 2014/01/13 23:42:18 krw Exp $	*/
+/*	$OpenBSD: parse.c,v 1.37 2014/01/21 03:07:50 krw Exp $	*/
 
 /* Common parser code for dhcpd and dhclient. */
 
@@ -40,10 +40,10 @@
  * Enterprises, see ``http://www.vix.com''.
  */
 
+#include <stdint.h>
+
 #include "dhcpd.h"
 #include "dhctoken.h"
-
-int parse_numeric_aggregate(FILE *, unsigned char *, int, int, int);
 
 /*
  * Skip to the semicolon ending the current statement.   If we encounter
@@ -102,7 +102,7 @@ parse_semi(FILE *cfile)
 
 	token = next_token(NULL, cfile);
 	if (token != ';') {
-		parse_warn("semicolon expected.");
+		parse_warn("expecting semicolon.");
 		skip_to_semi(cfile);
 		return (0);
 	}
@@ -121,7 +121,8 @@ parse_string(FILE *cfile)
 	token = next_token(&val, cfile);
 	if (token != TOK_STRING) {
 		parse_warn("filename must be a string");
-		skip_to_semi(cfile);
+		if (token != ';')
+			skip_to_semi(cfile);
 		return (NULL);
 	}
 	s = strdup(val);
@@ -135,33 +136,109 @@ parse_string(FILE *cfile)
 	return (s);
 }
 
+/* cidr :== ip-address "/" bit-count
+ * ip-address :== NUMBER [ DOT NUMBER [ DOT NUMBER [ DOT NUMBER ] ] ]
+ * bit-count :== 0..32
+ */
+int
+parse_cidr(FILE *cfile, unsigned char *cidr)  
+{
+	struct in_addr addr;
+	int token;
+	int len;
+
+	token = '.';
+	len = 0;
+	for (token = '.'; token == '.'; token = next_token(NULL, cfile)) {
+		if (!parse_decimal(cfile, cidr + 1 + len, 'B'))
+			break;
+		if (++len == sizeof(addr)) {
+			token = next_token(NULL, cfile);
+			break;
+		}
+	}
+
+	if (!len) {
+		parse_warn("expecting CIDR subnet.");
+		skip_to_semi(cfile);
+		return (0);
+	} else if (token != '/') {
+		parse_warn("expecting '/'.");
+		skip_to_semi(cfile);
+		return (0);
+	} else if (!parse_decimal(cfile, cidr, 'B') || *cidr > 32) {
+		parse_warn("Expecting CIDR prefix length.");
+		skip_to_semi(cfile);
+		return (0);
+	}
+
+	return (1);
+}
+
 int
 parse_ip_addr(FILE *cfile, struct in_addr *addr)
 {
-	return (parse_numeric_aggregate(cfile, (char *)addr, 4, '.', 10));
+	struct in_addr buf;
+	int len, token;
+
+	token = '.';
+	len = 0;
+	for (token = '.'; token == '.'; token = next_token(NULL, cfile)) {
+		if (!parse_decimal(cfile, (unsigned char *)&buf + len, 'B'))
+			break;
+		if (++len == sizeof(buf))
+			break;
+	}
+
+	if (len == 4) {
+		memcpy(addr, &buf, sizeof(*addr));
+		return (1);
+	} else if (token != '.') {
+		parse_warn("expecting '.'.");
+		skip_to_semi(cfile);
+		return (0);
+	} else {
+		parse_warn("expecting decimal octet.");
+		skip_to_semi(cfile);
+		return (0);
+	}
 }
 
 /*
- * hardware-parameter :== HARDWARE ETHERNET csns SEMI
- * csns :== NUMBER | csns COLON NUMBER
+ * ETHERNET :== 'ethernet' NUMBER:NUMBER:NUMBER:NUMBER:NUMBER:NUMBER
  */
 void
-parse_hardware_param(FILE *cfile, struct ether_addr *hardware)
+parse_ethernet(FILE *cfile, struct ether_addr *hardware)
 {
-	int token;
+	struct ether_addr buf;
+	int len, token;
 
 	token = next_token(NULL, cfile);
 	if (token != TOK_ETHERNET) {
-		parse_warn("expecting 'ethernet'");
-		skip_to_semi(cfile);
+		parse_warn("expecting 'ethernet'.");
+		if (token != ';')
+			skip_to_semi(cfile);
 		return;
 	}
 
-	if (parse_numeric_aggregate(cfile, hardware->ether_addr_octet,
-	    ETHER_ADDR_LEN, ':', 16) == 0)
-		return;
+	len = 0;
+	for (token = ':'; token == ':'; token = next_token(NULL, cfile)) {
+		if (!parse_hex(cfile, &buf.ether_addr_octet[len]))
+			break;
+		if (++len == sizeof(buf.ether_addr_octet))
+			break;
+	}
 
-	parse_semi(cfile);
+	if (len == 6) {
+		if (parse_semi(cfile))
+		    memcpy(hardware, &buf, sizeof(*hardware));
+	} else if (token != ':') {
+		parse_warn("expecting ':'.");
+		skip_to_semi(cfile);
+	} else {
+		parse_warn("expecting hex octet.");
+		skip_to_semi(cfile);
+	}
 }
 
 /*
@@ -170,159 +247,83 @@ parse_hardware_param(FILE *cfile, struct ether_addr *hardware)
 void
 parse_lease_time(FILE *cfile, time_t *timep)
 {
-	char *val;
-	uint32_t value;
-	int token;
+	u_int32_t value;
 
-	token = next_token(&val, cfile);
-	if (token != TOK_NUMBER) {
-		parse_warn("Expecting numeric lease time");
+	if (!parse_decimal(cfile, (char *)&value, 'L')) {
+		parse_warn("expecting unsigned 32-bit decimal value.");
 		skip_to_semi(cfile);
 		return;
 	}
-	convert_num((unsigned char *)&value, val, 10, 32);
-	/* Unswap the number - convert_num returns stuff in NBO. */
-	*timep = ntohl(value);
+	
+	*timep = betoh32(value);
 
 	parse_semi(cfile);
 }
 
-/*
- * Parse a sequence of numbers separated by the token specified in separator.
- * Exactly max numbers are expected.
- */
 int
-parse_numeric_aggregate(FILE *cfile, unsigned char *buf, int max, int separator,
-    int base)
+parse_decimal(FILE *cfile, unsigned char *buf, char fmt)
 {
 	char *val;
-	int token, count;
+	const char *errstr;
+	int bytes, token;
+	long long numval, low, high;
 
-	if (buf == NULL || max == 0)
-		error("no space for numeric aggregate");
-
-	for (count = 0; count < max; count++, buf++) {
-		if (count && (peek_token(&val, cfile) == separator))
-			token = next_token(&val, cfile);
-
-		token = next_token(&val, cfile);
-
-		if (token == TOK_NUMBER || (base == 16 && token ==
-			TOK_NUMBER_OR_NAME))
-			/* XXX Need to check if conversion was successful. */
-			convert_num(buf, val, base, 8);
-		else
-			break;
-	}
-
-	if (count < max) {
-		parse_warn("numeric aggregate too short.");
+	token = next_token(&val, cfile);
+	
+	switch (fmt) {
+	case 'l':	/* Signed 32-bit integer. */
+		low = INT32_MIN;
+		high = INT32_MAX;
+		bytes = 4;
+		break;
+	case 'L':	/* Unsigned 32-bit integer. */
+		low = 0;
+		high = UINT32_MAX;
+		bytes = 4;
+		break;
+	case 'S':	/* Unsigned 16-bit integer. */
+		low = 0;
+		high = UINT16_MAX;
+		bytes = 2;
+		break;
+	case 'B':	/* Unsigned 8-bit integer. */
+		low = 0;
+		high = UINT8_MAX;
+		bytes = 1;
+		break;
+	default:
 		return (0);
 	}
+
+	numval = strtonum(val, low, high, &errstr);
+	if (errstr)
+		return (0);
+
+	numval = htobe64(numval);
+	memcpy(buf, (char *)&numval + (sizeof(numval) - bytes), bytes);
 
 	return (1);
 }
 
-void
-convert_num(unsigned char *buf, char *str, int base, int size)
+int
+parse_hex(FILE *cfile, unsigned char *buf)
 {
-	int negative = 0, tval, max;
-	u_int32_t val = 0;
-	char *ptr = str;
+	char *val, *ep;
+	int token;
+	unsigned long ulval;
+	
+	token = next_token(&val, cfile);
 
-	if (*ptr == '-') {
-		negative = 1;
-		ptr++;
-	}
+	errno = 0;
+	ulval = strtoul(val, &ep, 16);
+	if ((val[0] == '\0' || *ep != '\0') ||
+	    (errno == ERANGE && ulval == ULONG_MAX) ||
+	    (ulval > UINT8_MAX))
+		return (0);
 
-	/* If base wasn't specified, figure it out from the data. */
-	if (!base) {
-		if (ptr[0] == '0') {
-			if (ptr[1] == 'x') {
-				base = 16;
-				ptr += 2;
-			} else if (isascii((unsigned char)ptr[1]) &&
-			    isdigit((unsigned char)ptr[1])) {
-				base = 8;
-				ptr += 1;
-			} else
-				base = 10;
-		} else
-			base = 10;
-	}
-
-	do {
-		tval = *ptr++;
-		/* XXX assumes ASCII. */
-		if (tval >= 'a')
-			tval = tval - 'a' + 10;
-		else if (tval >= 'A')
-			tval = tval - 'A' + 10;
-		else if (tval >= '0')
-			tval -= '0';
-		else {
-			warning("Bogus number: %s.", str);
-			break;
-		}
-		if (tval >= base) {
-			warning("Bogus number: %s: digit %d not in base %d",
-			    str, tval, base);
-			break;
-		}
-		val = val * base + tval;
-	} while (*ptr);
-
-	if (negative)
-		max = (1 << (size - 1));
-	else
-		max = (1 << (size - 1)) + ((1 << (size - 1)) - 1);
-	if (val > max) {
-		switch (base) {
-		case 8:
-			warning("value %s%o exceeds max (%d) for precision.",
-			    negative ? "-" : "", val, max);
-			break;
-		case 16:
-			warning("value %s%x exceeds max (%d) for precision.",
-			    negative ? "-" : "", val, max);
-			break;
-		default:
-			warning("value %s%u exceeds max (%d) for precision.",
-			    negative ? "-" : "", val, max);
-			break;
-		}
-	}
-
-	if (negative)
-		switch (size) {
-		case 8:
-			*buf = -(unsigned long)val;
-			break;
-		case 16:
-			putShort(buf, -(unsigned long)val);
-			break;
-		case 32:
-			putLong(buf, -(unsigned long)val);
-			break;
-		default:
-			warning("Unexpected integer size: %d", size);
-			break;
-		}
-	else
-		switch (size) {
-		case 8:
-			*buf = (u_int8_t)val;
-			break;
-		case 16:
-			putUShort(buf, (u_int16_t)val);
-			break;
-		case 32:
-			putULong(buf, val);
-			break;
-		default:
-			warning("Unexpected integer size: %d", size);
-			break;
-		}
+	buf[0] = ulval;
+	
+	return (1);
 }
 
 /*
