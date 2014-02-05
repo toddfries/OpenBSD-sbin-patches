@@ -1,4 +1,4 @@
-/*	$OpenBSD: iked.h,v 1.63 2014/01/22 09:25:41 markus Exp $	*/
+/*	$OpenBSD: iked.h,v 1.65 2014/01/24 07:31:25 markus Exp $	*/
 
 /*
  * Copyright (c) 2010-2013 Reyk Floeter <reyk@openbsd.org>
@@ -790,11 +790,10 @@ char	*ca_asn1_name(u_int8_t *, size_t);
 char	*ca_x509_name(void *);
 
 /* timer.c */
-void	 timer_initialize(struct iked *, struct iked_timer *,
+void	 timer_set(struct iked *, struct iked_timer *,
 	    void (*)(struct iked *, void *), void *);
-int	 timer_initialized(struct iked *, struct iked_timer *);
-void	 timer_register(struct iked *, struct iked_timer *, int);
-void	 timer_deregister(struct iked *, struct iked_timer *);
+void	 timer_add(struct iked *, struct iked_timer *, int);
+void	 timer_del(struct iked *, struct iked_timer *);
 
 /* proc.c */
 void	 proc_init(struct privsep *, struct privsep_proc *, u_int);
@@ -876,12 +875,12 @@ void	 ibuf_zero(struct ibuf *);
 /* log.c */
 void	 log_init(int);
 void	 log_verbose(int);
-void	 log_warn(const char *, ...);
-void	 log_warnx(const char *, ...);
-void	 log_info(const char *, ...);
-void	 log_debug(const char *, ...);
-void	 print_debug(const char *, ...);
-void	 print_verbose(const char *, ...);
+void	 log_warn(const char *, ...) __attribute__((format(printf, 1, 2)));
+void	 log_warnx(const char *, ...) __attribute__((format(printf, 1, 2)));
+void	 log_info(const char *, ...) __attribute__((format(printf, 1, 2)));
+void	 log_debug(const char *, ...) __attribute__((format(printf, 1, 2)));
+void	 print_debug(const char *, ...) __attribute__((format(printf, 1, 2)));
+void	 print_verbose(const char *, ...) __attribute__((format(printf, 1, 2)));
 __dead void fatal(const char *);
 __dead void fatalx(const char *);
 

@@ -1,4 +1,4 @@
-/*	$OpenBSD: ikev2.c,v 1.89 2014/01/22 09:25:41 markus Exp $	*/
+/*	$OpenBSD: ikev2.c,v 1.91 2014/01/24 07:35:55 markus Exp $	*/
 
 /*
  * Copyright (c) 2010-2013 Reyk Floeter <reyk@openbsd.org>
@@ -131,9 +131,9 @@ ikev2_dispatch_parent(int fd, struct privsep_proc *p, struct imsg *imsg)
 	case IMSG_CTL_PASSIVE:
 		if (config_getmode(env, imsg->hdr.type) == -1)
 			return (0);	/* ignore error */
-		timer_initialize(env, &env->sc_inittmr, ikev2_init_ike_sa,
+		timer_set(env, &env->sc_inittmr, ikev2_init_ike_sa,
 		    NULL);
-		timer_register(env, &env->sc_inittmr, IKED_INITIATOR_INITIAL);
+		timer_add(env, &env->sc_inittmr, IKED_INITIATOR_INITIAL);
 		return (0);
 	case IMSG_UDP_SOCKET:
 		return (config_getsocket(env, imsg, ikev2_msg_cb));
@@ -484,6 +484,34 @@ ikev2_ike_auth(struct iked *env, struct iked_sa *sa,
 		id = &sa->sa_iid;
 		certid = &sa->sa_icert;
 	}
+	/* try to relookup the policy based on the peerid */
+	if (msg->msg_id.id_type && !sa->sa_hdr.sh_initiator) {
+		struct iked_policy	*old = sa->sa_policy;
+
+		sa->sa_policy = NULL;
+		if (policy_lookup(env, msg) == 0 && msg->msg_policy &&
+		    msg->msg_policy != old) {
+			log_debug("%s: policy switch %p/%s to %p/%s",
+			    __func__, old, old->pol_name,
+			    msg->msg_policy, msg->msg_policy->pol_name);
+			RB_REMOVE(iked_sapeers, &old->pol_sapeers, sa);
+			if (RB_INSERT(iked_sapeers,
+			    &msg->msg_policy->pol_sapeers, sa)) {
+				/* failed, restore */
+				log_debug("%s: conflicting sa", __func__);
+				RB_INSERT(iked_sapeers, &old->pol_sapeers, sa);
+				msg->msg_policy = old;
+			}
+			policy = sa->sa_policy = msg->msg_policy;
+			if (policy != old) {
+				policy_unref(env, old);
+				policy_ref(env, policy);
+			}
+		} else {
+			/* restore */
+			msg->msg_policy = sa->sa_policy = old;
+		}
+	}
 
 	if (msg->msg_id.id_type) {
 		memcpy(id, &msg->msg_id, sizeof(*id));
@@ -699,8 +727,8 @@ ikev2_init_ike_sa(struct iked *env, void *arg)
 			    NULL, 0));
 	}
 
-	timer_initialize(env, &env->sc_inittmr, ikev2_init_ike_sa, NULL);
-	timer_register(env, &env->sc_inittmr, IKED_INITIATOR_INTERVAL);
+	timer_set(env, &env->sc_inittmr, ikev2_init_ike_sa, NULL);
+	timer_add(env, &env->sc_inittmr, IKED_INITIATOR_INTERVAL);
 }
 
 int
@@ -1020,8 +1048,8 @@ ikev2_init_done(struct iked *env, struct iked_sa *sa)
 		ret = ikev2_childsa_enable(env, sa);
 	if (ret == 0) {
 		sa_state(env, sa, IKEV2_STATE_ESTABLISHED);
-		timer_initialize(env, &sa->sa_timer, ikev2_ike_sa_alive, sa);
-		timer_register(env, &sa->sa_timer, IKED_IKE_SA_ALIVE_TIMEOUT);
+		timer_set(env, &sa->sa_timer, ikev2_ike_sa_alive, sa);
+		timer_add(env, &sa->sa_timer, IKED_IKE_SA_ALIVE_TIMEOUT);
 	}
 
 	if (ret)
@@ -2070,8 +2098,8 @@ ikev2_resp_ike_auth(struct iked *env, struct iked_sa *sa)
 		ret = ikev2_childsa_enable(env, sa);
 	if (ret == 0) {
 		sa_state(env, sa, IKEV2_STATE_ESTABLISHED);
-		timer_initialize(env, &sa->sa_timer, ikev2_ike_sa_alive, sa);
-		timer_register(env, &sa->sa_timer, IKED_IKE_SA_ALIVE_TIMEOUT);
+		timer_set(env, &sa->sa_timer, ikev2_ike_sa_alive, sa);
+		timer_add(env, &sa->sa_timer, IKED_IKE_SA_ALIVE_TIMEOUT);
 	}
 
  done:
@@ -2625,15 +2653,15 @@ ikev2_resp_create_child_sa(struct iked *env, struct iked_message *msg)
 
 		log_debug("%s: activating new IKE SA", __func__);
 		sa_state(env, nsa, IKEV2_STATE_ESTABLISHED);
-		timer_initialize(env, &nsa->sa_timer, ikev2_ike_sa_alive, nsa);
-		timer_register(env, &nsa->sa_timer, IKED_IKE_SA_ALIVE_TIMEOUT);
+		timer_set(env, &nsa->sa_timer, ikev2_ike_sa_alive, nsa);
+		timer_add(env, &nsa->sa_timer, IKED_IKE_SA_ALIVE_TIMEOUT);
 		nsa->sa_stateflags = sa->sa_statevalid; /* XXX */
 
 		/* unregister DPD keep alive timer first */
 		if (sa->sa_state == IKEV2_STATE_ESTABLISHED)
-			timer_deregister(env, &sa->sa_timer);
-		timer_initialize(env, &sa->sa_timer, ikev2_ike_sa_timeout, sa);
-		timer_register(env, &sa->sa_timer, IKED_IKE_SA_REKEY_TIMEOUT);
+			timer_del(env, &sa->sa_timer);
+		timer_set(env, &sa->sa_timer, ikev2_ike_sa_timeout, sa);
+		timer_add(env, &sa->sa_timer, IKED_IKE_SA_REKEY_TIMEOUT);
 	} else
 		ret = ikev2_childsa_enable(env, sa);
 
@@ -2691,7 +2719,7 @@ ikev2_ike_sa_alive(struct iked *env, void *arg)
 	}
 
 	/* re-register */
-	timer_register(env, &sa->sa_timer, IKED_IKE_SA_ALIVE_TIMEOUT);
+	timer_add(env, &sa->sa_timer, IKED_IKE_SA_ALIVE_TIMEOUT);
 }
 
 int
