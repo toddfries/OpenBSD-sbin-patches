@@ -1,4 +1,4 @@
-/*	$OpenBSD: iked.h,v 1.65 2014/01/24 07:31:25 markus Exp $	*/
+/*	$OpenBSD: iked.h,v 1.69 2014/02/17 15:53:46 markus Exp $	*/
 
 /*
  * Copyright (c) 2010-2013 Reyk Floeter <reyk@openbsd.org>
@@ -165,6 +165,7 @@ struct iked_childsa {
 	u_int8_t			 csa_allocated;	/* from the kernel */
 	u_int8_t			 csa_persistent;/* do not rekey */
 	u_int8_t			 csa_esn;	/* use ESN */
+	u_int8_t			 csa_transport;	/* transport mode */
 
 	struct iked_spi			 csa_spi;
 
@@ -238,6 +239,7 @@ struct iked_policy {
 #define IKED_POLICY_REFCNT		 0x04
 #define IKED_POLICY_QUICK		 0x08
 #define IKED_POLICY_SKIP		 0x10
+#define IKED_POLICY_IPCOMP		 0x20
 
 	int				 pol_refcnt;
 
@@ -404,6 +406,10 @@ struct iked_sa {
 	struct iked_childsas		 sa_childsas;	/* IPSec Child SAs */
 	struct iked_saflows		 sa_flows;	/* IPSec flows */
 
+	u_int8_t			 sa_ipcomp;	/* IPcomp transform */
+	u_int16_t			 sa_cpi_out;	/* IPcomp outgoing */
+	u_int16_t			 sa_cpi_in;	/* IPcomp incoming*/
+
 	struct iked_timer		 sa_timer;	/* SA timeouts */
 #define IKED_IKE_SA_REKEY_TIMEOUT	 300		/* 5 minutes */
 #define IKED_IKE_SA_ALIVE_TIMEOUT	 60		/* 1 minute */
@@ -416,8 +422,12 @@ struct iked_sa {
 
 	RB_ENTRY(iked_sa)		 sa_peer_entry;
 	RB_ENTRY(iked_sa)		 sa_entry;
+
+	struct iked_addr		*sa_addrpool;	/* address from pool */
+	RB_ENTRY(iked_sa)		 sa_addrpool_entry;	/* pool entries */
 };
 RB_HEAD(iked_sas, iked_sa);
+RB_HEAD(iked_addrpool, iked_sa);
 
 struct iked_message {
 	struct ibuf		*msg_data;
@@ -505,6 +515,12 @@ struct privsep_proc {
 	struct iked		*p_env;
 };
 
+struct iked_ocsp_entry {
+	TAILQ_ENTRY(iked_ocsp_entry) ioe_entry;	/* next request */
+	void			*ioe_ocsp;	/* private ocsp request data */
+};
+TAILQ_HEAD(iked_ocsp_requests, iked_ocsp_entry);
+
 /*
  * Daemon configuration
  */
@@ -539,6 +555,11 @@ struct iked {
 #define IKED_INITIATOR_INTERVAL		 60
 
 	struct privsep			 sc_ps;
+
+	struct iked_ocsp_requests	 sc_ocsp;
+	char				*sc_ocsp_url;
+
+	struct iked_addrpool		 sc_addrpool;
 };
 
 struct iked_socket {
@@ -597,6 +618,8 @@ int	 config_setuser(struct iked *, struct iked_user *, enum privsep_procid);
 int	 config_getuser(struct iked *, struct imsg *);
 int	 config_setcompile(struct iked *, enum privsep_procid);
 int	 config_getcompile(struct iked *, struct imsg *);
+int	 config_setocsp(struct iked *);
+int	 config_getocsp(struct iked *, struct imsg *);
 
 /* policy.c */
 void	 policy_init(struct iked *);
@@ -628,6 +651,7 @@ struct iked_user *
 	 user_lookup(struct iked *, const char *);
 RB_PROTOTYPE(iked_sas, iked_sa, sa_entry, sa_cmp);
 RB_PROTOTYPE(iked_sapeers, iked_sa, sa_peer_entry, sa_peer_cmp);
+RB_PROTOTYPE(iked_addrpool, iked_sa, sa_addrpool_entry, sa_addrpool_cmp);
 RB_PROTOTYPE(iked_users, iked_user, user_entry, user_cmp);
 RB_PROTOTYPE(iked_activesas, iked_childsa, csa_node, childsa_cmp);
 RB_PROTOTYPE(iked_flows, iked_flow, flow_node, flow_cmp);
@@ -814,7 +838,6 @@ int	 proc_composev_imsg(struct iked *, enum privsep_procid,
 	    u_int16_t, int, const struct iovec *, int);
 int	 proc_forward_imsg(struct iked *, struct imsg *,
 	    enum privsep_procid);
-void	 proc_flush_imsg(struct iked *, enum privsep_procid);
 
 /* util.c */
 void	 socket_set_blockmode(int, enum blockmodes);
@@ -883,6 +906,12 @@ void	 print_debug(const char *, ...) __attribute__((format(printf, 1, 2)));
 void	 print_verbose(const char *, ...) __attribute__((format(printf, 1, 2)));
 __dead void fatal(const char *);
 __dead void fatalx(const char *);
+
+/* ocsp.c */
+int	 ocsp_connect(struct iked *env);
+int	 ocsp_receive_fd(struct iked *, struct imsg *);
+int	 ocsp_validate_cert(struct iked *, struct iked_static_id *,
+    void *, size_t, struct iked_sahdr, u_int8_t);
 
 /* parse.y */
 int	 parse_config(const char *, struct iked *);

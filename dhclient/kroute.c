@@ -1,4 +1,4 @@
-/*	$OpenBSD: kroute.c,v 1.60 2014/01/20 02:54:07 deraadt Exp $	*/
+/*	$OpenBSD: kroute.c,v 1.64 2014/02/13 00:24:13 krw Exp $	*/
 
 /*
  * Copyright 2012 Kenneth R Westerback <krw@openbsd.org>
@@ -65,10 +65,7 @@ flush_routes(char *ifname, int rdomain)
 	if (rslt == -1)
 		warning("flush_routes: imsg_compose: %s", strerror(errno));
 
-	/* Do flush to maximize chances of cleaning up routes on exit. */
-	rslt = imsg_flush(unpriv_ibuf);
-	if (rslt == -1)
-		warning("flush_routes: imsg_flush: %s", strerror(errno));
+	flush_unpriv_ibuf("flush_routes");
 }
 
 void
@@ -188,9 +185,10 @@ add_route(int rdomain, struct in_addr dest, struct in_addr netmask,
 
 	rslt = imsg_compose(unpriv_ibuf, IMSG_ADD_ROUTE, 0, 0, -1,
 	    &imsg, sizeof(imsg));
-
 	if (rslt == -1)
 		warning("add_route: imsg_compose: %s", strerror(errno));
+
+ 	flush_unpriv_ibuf("add_route");
 }
 
 void
@@ -334,10 +332,7 @@ delete_address(char *ifname, int rdomain, struct in_addr addr)
 	if (rslt == -1)
 		warning("delete_address: imsg_compose: %s", strerror(errno));
 
-	/* Do flush to quickly kill previous dhclient, if any. */
-	rslt = imsg_flush(unpriv_ibuf);
-	if (rslt == -1 && errno != EPIPE)
-		warning("delete_address: imsg_flush: %s", strerror(errno));
+	flush_unpriv_ibuf("delete_address");
 }
 
 void
@@ -399,9 +394,10 @@ add_address(char *ifname, int rdomain, struct in_addr addr,
 
 	rslt = imsg_compose(unpriv_ibuf, IMSG_ADD_ADDRESS, 0, 0, -1, &imsg,
 	    sizeof(imsg));
-
 	if (rslt == -1)
 		warning("add_address: imsg_compose: %s", strerror(errno));
+
+	flush_unpriv_ibuf("add_address");
 }
 
 void
@@ -471,12 +467,9 @@ sendhup(struct client_lease *active)
 	rslt = imsg_compose(unpriv_ibuf, IMSG_HUP, 0, 0, -1,
 	    &imsg, sizeof(imsg));
 	if (rslt == -1)
-		warning("cleanup: imsg_compose: %s", strerror(errno));
+		warning("sendhup: imsg_compose: %s", strerror(errno));
 
-	/* Do flush so cleanup message gets through immediately. */
-	rslt = imsg_flush(unpriv_ibuf);
-	if (rslt == -1 && errno != EPIPE)
-		warning("cleanup: imsg_flush: %s", strerror(errno));
+	flush_unpriv_ibuf("sendhup");
 }
 
 /*
@@ -691,4 +684,21 @@ delete_route(int s, int rdomain, struct rt_msghdr *rtm)
 			error("RTM_DELETE write: %s", strerror(errno));
 	} else if (rlen < (int)rtm->rtm_msglen)
 		error("short RTM_DELETE write (%zd)\n", rlen);
+}
+
+void
+flush_unpriv_ibuf(const char *who)
+{
+	while (unpriv_ibuf->w.queued) {
+		if (msgbuf_write(&unpriv_ibuf->w) <= 0) {
+			if (errno == EAGAIN)
+				break;
+			if (quit == 0)
+				quit = INTERNALSIG;
+			if (errno != EPIPE && errno != 0)
+				warning("%s: msgbuf_write: %s", who,
+				    strerror(errno));
+			break;
+		}
+	}
 }

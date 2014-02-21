@@ -1,4 +1,4 @@
-/*	$OpenBSD: dispatch.c,v 1.87 2013/12/08 22:49:02 krw Exp $	*/
+/*	$OpenBSD: dispatch.c,v 1.89 2014/02/18 01:46:58 krw Exp $	*/
 
 /*
  * Copyright 2004 Henning Brauer <henning@openbsd.org>
@@ -91,7 +91,13 @@ discover_interface(void)
 			memcpy(ifi->hw_address.ether_addr_octet, LLADDR(foo),
 			    ETHER_ADDR_LEN);
 			opt = &config->send_options[DHO_DHCP_CLIENT_IDENTIFIER];
-			if (opt->len == 0) {
+			/*
+			 * Check both len && data so
+			 *     send dhcp-client-identifier "";
+			 * can be used to suppress sending the default client
+			 * identifier.
+			 */
+			if (opt->len == 0 && opt->data == NULL) {
 				/* Build default client identifier. */
 				data = calloc(1, ETHER_ADDR_LEN + 1);
 				if (data != NULL) {
@@ -209,12 +215,7 @@ another:
 				routehandler();
 		}
 		if (fds[2].revents & POLLOUT) {
-			if (msgbuf_write(&unpriv_ibuf->w) <= 0 &&
-			    errno != EAGAIN) {
-				warning("pipe write error to [priv]");
-				quit = INTERNALSIG;
-				continue;
-			}
+			flush_unpriv_ibuf("dispatch");
 		}
 		if ((fds[2].revents & (POLLIN | POLLHUP))) {
 			/* Pipe to [priv] closed. Assume it emitted error. */

@@ -1,4 +1,4 @@
-/*	$OpenBSD: ikev2_pld.c,v 1.35 2014/01/24 05:58:52 mikeb Exp $	*/
+/*	$OpenBSD: ikev2_pld.c,v 1.38 2014/02/17 11:00:14 reyk Exp $	*/
 
 /*
  * Copyright (c) 2010-2013 Reyk Floeter <reyk@openbsd.org>
@@ -453,7 +453,7 @@ ikev2_pld_id(struct iked *env, struct ikev2_payload *pld,
 		return (-1);
 	}
 
-	log_debug("%s: id %s length %d", __func__, idstr, len);
+	log_debug("%s: id %s length %zu", __func__, idstr, len);
 
 	if (!ikev2_msg_frompeer(msg)) {
 		ibuf_release(idb.id_buf);
@@ -495,7 +495,7 @@ ikev2_pld_cert(struct iked *env, struct ikev2_payload *pld,
 	buf = msgbuf + offset;
 	len = betoh16(pld->pld_length) - sizeof(*pld) - sizeof(cert);
 
-	log_debug("%s: type %s length %d",
+	log_debug("%s: type %s length %zu",
 	    __func__, print_map(cert.cert_type, ikev2_cert_map), len);
 
 	print_hex(buf, 0, len);
@@ -535,7 +535,7 @@ ikev2_pld_certreq(struct iked *env, struct ikev2_payload *pld,
 	buf = msgbuf + offset;
 	len = betoh16(pld->pld_length) - sizeof(*pld) - sizeof(cert);
 
-	log_debug("%s: type %s length %d",
+	log_debug("%s: type %s length %zd",
 	    __func__, print_map(cert.cert_type, ikev2_cert_map), len);
 
 	if (len < 0) {
@@ -587,7 +587,7 @@ ikev2_pld_auth(struct iked *env, struct ikev2_payload *pld,
 	buf = msgbuf + offset;
 	len = betoh16(pld->pld_length) - sizeof(*pld) - sizeof(auth);
 
-	log_debug("%s: method %s length %d",
+	log_debug("%s: method %s length %zu",
 	    __func__, print_map(auth.auth_method, ikev2_auth_map), len);
 
 	print_hex(buf, 0, len);
@@ -650,6 +650,8 @@ ikev2_pld_notify(struct iked *env, struct ikev2_payload *pld,
 	struct iked_spi		*rekey;
 	u_int16_t		 type;
 	u_int16_t		 group;
+	u_int16_t		 cpi;
+	u_int8_t		 transform;
 
 	if ((n = ibuf_seek(msg->msg_data, offset, sizeof(*n))) == NULL)
 		return (-1);
@@ -753,6 +755,23 @@ ikev2_pld_notify(struct iked *env, struct ikev2_payload *pld,
 		    print_map(n->n_protoid, ikev2_saproto_map),
 		    print_spi(rekey->spi, n->n_spisize));
 		break;
+	case IKEV2_N_IPCOMP_SUPPORTED:
+		if (len < sizeof(cpi) + sizeof(transform)) {
+			log_debug("%s: malformed ipcomp notification",
+			    __func__);
+			return (0);
+		}
+		memcpy(&cpi, buf, sizeof(cpi));
+		memcpy(&transform, buf + sizeof(cpi), sizeof(transform));
+		log_debug("%s: cpi 0x%x, transform %s, len %zu", __func__,
+		    betoh16(cpi), print_map(transform, ikev2_ipcomp_map), len);
+		/* we only support deflate */
+		if ((msg->msg_policy->pol_flags & IKED_POLICY_IPCOMP) &&
+		    (transform == IKEV2_IPCOMP_DEFLATE)) {
+			msg->msg_sa->sa_ipcomp = transform;
+			msg->msg_sa->sa_cpi_out = betoh16(cpi);
+		}
+		break;
 	}
 
 	return (0);
@@ -808,7 +827,7 @@ ikev2_pld_delete(struct iked *env, struct ikev2_payload *pld,
 			ret = ikev2_send_ike_e(env, sa, resp,
 			    IKEV2_PAYLOAD_NONE,
 			    IKEV2_EXCHANGE_INFORMATIONAL, 1);
-			msg->msg_responded = 1;
+			msg->msg_parent->msg_responded = 1;
 			ibuf_release(resp);
 			sa_state(env, sa, IKEV2_STATE_CLOSED);
 			return (ret);
@@ -905,13 +924,13 @@ ikev2_pld_delete(struct iked *env, struct ikev2_payload *pld,
 			}
 		}
 
-		log_warnx("%s: deleted %d spis", __func__, found);
+		log_warnx("%s: deleted %zu spis", __func__, found);
 	}
 
 	if (found) {
 		ret = ikev2_send_ike_e(env, sa, resp, IKEV2_PAYLOAD_DELETE,
 		    IKEV2_EXCHANGE_INFORMATIONAL, 1);
-		msg->msg_responded = 1;
+		msg->msg_parent->msg_responded = 1;
 	} else {
 		/* XXX should we send an INVALID_SPI notification? */
 		ret = 0;
@@ -943,7 +962,7 @@ ikev2_pld_ts(struct iked *env, struct ikev2_payload *pld,
 
 	len = betoh16(pld->pld_length) - sizeof(*pld) - sizeof(tsp);
 
-	log_debug("%s: count %d length %d", __func__,
+	log_debug("%s: count %d length %zu", __func__,
 	    tsp.tsp_count, len);
 
 	for (i = 0; i < tsp.tsp_count; i++) {
@@ -1062,7 +1081,7 @@ ikev2_pld_cp(struct iked *env, struct ikev2_payload *pld,
 	buf = msgbuf + offset;
 	len = betoh16(pld->pld_length) - sizeof(*pld) - sizeof(cp);
 
-	log_debug("%s: type %s length %d",
+	log_debug("%s: type %s length %zu",
 	    __func__, print_map(cp.cp_type, ikev2_cp_map), len);
 	print_hex(buf, 0, len);
 

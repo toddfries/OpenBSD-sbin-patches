@@ -1,4 +1,4 @@
-/*	$OpenBSD: dhclient.c,v 1.288 2014/01/25 05:21:23 krw Exp $	*/
+/*	$OpenBSD: dhclient.c,v 1.293 2014/02/09 20:45:56 krw Exp $	*/
 
 /*
  * Copyright 2004 Henning Brauer <henning@openbsd.org>
@@ -64,7 +64,6 @@
 #include <pwd.h>
 #include <resolv.h>
 
-#define	CLIENT_PATH 		"PATH=/usr/bin:/usr/sbin:/bin:/sbin"
 #define DEFAULT_LEASE_TIME	43200	/* 12 hours. */
 #define TIME_MAX		2147483647
 
@@ -564,7 +563,7 @@ main(int argc, char *argv[])
 	imsg_init(unpriv_ibuf, socket_fd[1]);
 
 	if ((fd = open(path_dhclient_db,
-	    O_RDONLY|O_EXLOCK|O_CREAT|O_NOFOLLOW, 0)) == -1)
+	    O_RDONLY|O_EXLOCK|O_CREAT|O_NOFOLLOW, 0640)) == -1)
 		error("can't open and lock %s: %s", path_dhclient_db,
 		    strerror(errno));
 	read_client_leases();
@@ -1734,7 +1733,7 @@ rewrite_option_db(struct client_lease *offered, struct client_lease *effective)
 
 	write_file(path_option_db,
 	    O_WRONLY | O_CREAT | O_TRUNC | O_SYNC | O_EXLOCK | O_NOFOLLOW,
-	    S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH, 0, 0, db, strlen(db));
+	    S_IRUSR | S_IWUSR | S_IRGRP, 0, 0, db, strlen(db));
 }
 
 char *
@@ -2420,10 +2419,7 @@ write_file(char *path, int flags, mode_t mode, uid_t uid, gid_t gid,
 	if (rslt == -1)
 		warning("write_file: imsg_composev: %s", strerror(errno));
 
-	/* Do flush to maximize chances of keeping file current. */
-	rslt = imsg_flush(unpriv_ibuf);
-	if (rslt == -1)
-		warning("write_file: imsg_flush: %s", strerror(errno));
+	flush_unpriv_ibuf("write_file");
 }
 
 void
@@ -2450,8 +2446,12 @@ priv_write_file(struct imsg_write_file *imsg)
 		note("Short contents write to '%s' (%zd vs %zd)", imsg->path,
 		    n, imsg->len);
 
-	fchmod(fd, imsg->mode);
-	fchown(fd, imsg->uid, imsg->gid);
+	if (fchmod(fd, imsg->mode) == -1)
+		note("fchmod(fd, 0x%x) of '%s' failed (%s)", imsg->mode,
+		    imsg->path, strerror(errno));
+	if (fchown(fd, imsg->uid, imsg->gid) == -1)
+		note("fchown(fd, %d, %d) of '%s' failed (%s)", imsg->uid,
+		    imsg->gid, imsg->path, strerror(errno));
 
 	close(fd);
 }
