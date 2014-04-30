@@ -1,4 +1,4 @@
-/*	$OpenBSD: fdisk.c,v 1.55 2014/03/02 15:41:28 deraadt Exp $	*/
+/*	$OpenBSD: fdisk.c,v 1.63 2014/03/20 13:18:21 krw Exp $	*/
 
 /*
  * Copyright (c) 1997 Tobias Weingartner
@@ -28,14 +28,18 @@
 #include <sys/types.h>
 #include <sys/fcntl.h>
 #include <sys/disklabel.h>
-#include <err.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <paths.h>
 #include <stdint.h>
+#include <err.h>
+
 #include "disk.h"
+#include "part.h"
+#include "mbr.h"
+#include "misc.h"
 #include "user.h"
 
 #define _PATH_MBR _PATH_BOOTDIR "mbr"
@@ -51,7 +55,7 @@ usage(void)
 	extern char * __progname;
 
 	fprintf(stderr, "usage: %s "
-	    "[-eiuy] [-l blocks] [-c cylinders -h heads -s sectors] [-f mbrfile] disk\n"
+	    "[-eiuy] [-c cylinders -h heads -s sectors] [-f mbrfile] [-l blocks] disk\n"
 	    "\t-i: initialize disk with virgin MBR\n"
 	    "\t-u: update MBR code, preserve partition table\n"
 	    "\t-e: edit MBRs on disk interactively\n"
@@ -71,16 +75,15 @@ main(int argc, char *argv[])
 	int ch, fd, error;
 	int i_flag = 0, m_flag = 0, u_flag = 0;
 	int c_arg = 0, h_arg = 0, s_arg = 0;
-	disk_t disk;
+	struct disk disk;
 	u_int32_t l_arg = 0;
-	DISK_metrics *usermetrics;
 #ifdef HAS_MBR
 	char *mbrfile = _PATH_MBR;
 #else
 	char *mbrfile = NULL;
 #endif
-	mbr_t mbr;
-	char mbr_buf[DEV_BSIZE];
+	struct mbr mbr;
+	struct dos_mbr dos_mbr;
 
 	while ((ch = getopt(argc, argv, "ieuf:c:h:s:l:y")) != -1) {
 		const char *errstr;
@@ -115,9 +118,9 @@ main(int argc, char *argv[])
 				errx(1, "Sector argument %s [1..63].", errstr);
 			break;
 		case 'l':
-			l_arg = strtonum(optarg, 1, UINT32_MAX, &errstr);
+			l_arg = strtonum(optarg, 64, UINT32_MAX, &errstr);
 			if (errstr)
-				errx(1, "Block argument %s [1..%u].", errstr,
+				errx(1, "Block argument %s [64..%u].", errstr,
 				    UINT32_MAX);
 			break;
 		case 'y':
@@ -130,41 +133,38 @@ main(int argc, char *argv[])
 	argc -= optind;
 	argv += optind;
 
+	memset(&disk, 0, sizeof(disk));
+
 	/* Argument checking */
 	if (argc != 1)
 		usage();
 	else
 		disk.name = argv[0];
 
-	/* Put in supplied geometry if there */
+	/* Start with the disklabel geometry and get the sector size. */
+	DISK_getlabelgeometry(&disk);
+
 	if (c_arg | h_arg | s_arg) {
-		usermetrics = malloc(sizeof(DISK_metrics));
-		if (usermetrics != NULL) {
-			if (c_arg && h_arg && s_arg) {
-				usermetrics->cylinders = c_arg;
-				usermetrics->heads = h_arg;
-				usermetrics->sectors = s_arg;
-				usermetrics->size = c_arg * h_arg * s_arg;
-			} else
-				errx(1, "Please specify a full geometry with [-chs].");
-		}
+		/* Use supplied geometry if it is completely specified. */
+		if (c_arg && h_arg && s_arg) {
+			disk.cylinders = c_arg;
+			disk.heads = h_arg;
+			disk.sectors = s_arg;
+			disk.size = c_arg * h_arg * s_arg;
+		} else
+			errx(1, "Please specify a full geometry with [-chs].");
 	} else if (l_arg) {
-		/* Force into LBA mode */
-		usermetrics = malloc(sizeof(DISK_metrics));
-		if (usermetrics != NULL) {
-			usermetrics->cylinders = l_arg / 64;
-			usermetrics->heads = 1;
-			usermetrics->sectors = 64;
-			usermetrics->size = l_arg;
-		}
-	} else
-		usermetrics = NULL;
+		/* Use supplied size to calculate a geometry. */
+		disk.cylinders = l_arg / 64;
+		disk.heads = 1;
+		disk.sectors = 64;
+		disk.size = l_arg;
+	}
 
-	/* Get the geometry */
-	disk.real = NULL;
-	if (DISK_getmetrics(&disk, usermetrics))
-		errx(1, "Can't get disk geometry, please use [-chs] to specify.");
-
+	if (disk.size == 0 || disk.cylinders == 0 || disk.heads == 0 ||
+	    disk.sectors == 0 || unit_types[SECTORS].conversion == 0)
+		errx(1, "Can't get disk geometry, please use [-chs] "
+		    "to specify.");
 
 	/* Print out current MBRs on disk */
 	if ((i_flag + u_flag + m_flag) == 0)
@@ -177,14 +177,14 @@ main(int argc, char *argv[])
 		mbrfile = NULL;
 	}
 	if (mbrfile == NULL) {
-		memcpy(mbr_buf, builtin_mbr, sizeof(mbr_buf));
+		memcpy(&dos_mbr, builtin_mbr, sizeof(dos_mbr));
 	} else {
-		error = MBR_read(fd, 0, mbr_buf);
+		error = MBR_read(fd, 0, &dos_mbr);
 		if (error == -1)
 			err(1, "Unable to read MBR");
 		close(fd);
 	}
-	MBR_parse(&disk, mbr_buf, 0, 0, &mbr);
+	MBR_parse(&disk, &dos_mbr, 0, 0, &mbr);
 
 	/* Now do what we are supposed to */
 	if (i_flag || u_flag)
@@ -196,4 +196,3 @@ main(int argc, char *argv[])
 
 	return (0);
 }
-

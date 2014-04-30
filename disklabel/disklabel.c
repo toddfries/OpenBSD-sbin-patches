@@ -1,4 +1,4 @@
-/*	$OpenBSD: disklabel.c,v 1.192 2014/02/14 15:03:43 krw Exp $	*/
+/*	$OpenBSD: disklabel.c,v 1.194 2014/04/23 11:49:25 otto Exp $	*/
 
 /*
  * Copyright (c) 1987, 1993
@@ -541,7 +541,7 @@ makebootarea(char *boot, struct disklabel *dp)
 		warnx("bootstrap: xxboot = %s", xxboot);
 
 	/*
-	 * For NUMBOOT > 0 architectures (hp300/hppa/hppa64/landisk/vax)
+	 * For NUMBOOT > 0 architectures (hppa/hppa64/landisk/vax)
 	 * up to d_bbsize bytes of ``xxboot'' go in bootarea, the rest
 	 * is remembered and written later following the bootarea.
 	 */
@@ -838,7 +838,6 @@ edit(struct disklabel *lp, int f)
 		ending_sector = DL_GETBEND(&label);
 		starting_sector = DL_GETBSTART(&label);
 		total_sectors = DL_GETDSIZE(&label);
-		memset(&label, 0, sizeof(label));
 		error = getasciilabel(fp, &label);
 		DL_SETBEND(&label, ending_sector);
 		DL_SETBSTART(&label, starting_sector);

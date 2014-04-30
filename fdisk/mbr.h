@@ -1,4 +1,4 @@
-/*	$OpenBSD: mbr.h,v 1.12 2013/03/21 18:37:07 deraadt Exp $	*/
+/*	$OpenBSD: mbr.h,v 1.17 2014/03/23 13:56:24 krw Exp $	*/
 
 /*
  * Copyright (c) 1997 Tobias Weingartner
@@ -28,39 +28,21 @@
 #ifndef _MBR_H
 #define _MBR_H
 
-#include "part.h"
-
-/* Various constants */
-#define MBR_CODE_SIZE 0x1BE
-#define MBR_PART_SIZE	0x10
-#define MBR_PART_OFF 0x1BE
-#define MBR_SIG_OFF 0x1FE
-
-
-/* MBR type */
-typedef struct _mbr_t {
+struct mbr {
 	off_t reloffset;
 	off_t offset;
-	unsigned char code[MBR_CODE_SIZE];
-	prt_t part[NDOSPART];
-	unsigned short signature;
-} mbr_t;
+	unsigned char code[DOSPARTOFF];
+	struct prt part[NDOSPART];
+	u_int16_t signature;
+};
 
-/* Prototypes */
 void MBR_print_disk(char *);
-void MBR_print(mbr_t *, char *);
-void MBR_parse(disk_t *, char *, off_t, off_t, mbr_t *);
-void MBR_make(mbr_t *, char *);
-void MBR_init(disk_t *, mbr_t *);
-int MBR_read(int, off_t, char *);
-int MBR_write(int, off_t, char *);
-void MBR_pcopy(disk_t *, mbr_t *);
-
-/* Sanity check */
-#include <sys/param.h>
-#if (DEV_BSIZE != 512)
-#error "DEV_BSIZE != 512, somebody better fix me!"
-#endif
+void MBR_print(struct mbr *, char *);
+void MBR_parse(struct disk *, struct dos_mbr *, off_t, off_t, struct mbr *);
+void MBR_make(struct mbr *, struct dos_mbr *);
+void MBR_init(struct disk *, struct mbr *);
+int MBR_read(int, off_t, struct dos_mbr *);
+int MBR_write(int, off_t, struct dos_mbr *);
+void MBR_pcopy(struct disk *, struct mbr *);
 
 #endif /* _MBR_H */
-

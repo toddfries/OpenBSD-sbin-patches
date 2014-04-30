@@ -1,4 +1,4 @@
-/*	$OpenBSD: cmd.c,v 1.60 2013/03/21 18:45:58 deraadt Exp $	*/
+/*	$OpenBSD: cmd.c,v 1.71 2014/03/31 23:04:03 krw Exp $	*/
 
 /*
  * Copyright (c) 1997 Tobias Weingartner
@@ -31,48 +31,49 @@
 #include <err.h>
 #include <errno.h>
 #include <stdio.h>
-#include <ctype.h>
 #include <memory.h>
 #include <stdlib.h>
-#include <unistd.h>
 #include <signal.h>
-#include <limits.h>
+#include <unistd.h>
+
 #include "disk.h"
 #include "misc.h"
-#include "user.h"
 #include "part.h"
+#include "mbr.h"
+#include "user.h"
 #include "cmd.h"
 
 int
-Xreinit(cmd_t *cmd, disk_t *disk, mbr_t *mbr, mbr_t *tt, int offset)
+Xreinit(char *args, struct disk *disk, struct mbr *mbr, struct mbr *tt,
+    int offset)
 {
-	char buf[DEV_BSIZE];
+	struct dos_mbr dos_mbr;
 
 	/* Copy template MBR */
-	MBR_make(tt, buf);
-	MBR_parse(disk, buf, mbr->offset, mbr->reloffset, mbr);
+	MBR_make(tt, &dos_mbr);
+	MBR_parse(disk, &dos_mbr, mbr->offset, mbr->reloffset, mbr);
 
 	MBR_init(disk, mbr);
 
 	/* Tell em we did something */
 	printf("In memory copy is initialized to:\n");
 	printf("Offset: %d\t", offset);
-	MBR_print(mbr, cmd->args);
+	MBR_print(mbr, args);
 	printf("Use 'write' to update disk.\n");
 
 	return (CMD_DIRTY);
 }
 
-/* ARGSUSED */
 int
-Xdisk(cmd_t *cmd, disk_t *disk, mbr_t *mbr, mbr_t *tt, int offset)
+Xdisk(char *args, struct disk *disk, struct mbr *mbr, struct mbr *tt,
+    int offset)
 {
 	int maxcyl  = 1024;
 	int maxhead = 256;
 	int maxsec  = 63;
 
 	/* Print out disk info */
-	DISK_printmetrics(disk, cmd->args);
+	DISK_printgeometry(disk, args);
 
 #if defined (__powerpc__) || defined (__mips__)
 	maxcyl  = 9999999;
@@ -82,81 +83,76 @@ Xdisk(cmd_t *cmd, disk_t *disk, mbr_t *mbr, mbr_t *tt, int offset)
 
 	/* Ask for new info */
 	if (ask_yn("Change disk geometry?")) {
-		disk->real->cylinders = ask_num("BIOS Cylinders",
-		    disk->real->cylinders, 1, maxcyl);
-		disk->real->heads = ask_num("BIOS Heads",
-		    disk->real->heads, 1, maxhead);
-		disk->real->sectors = ask_num("BIOS Sectors",
-		    disk->real->sectors, 1, maxsec);
+		disk->cylinders = ask_num("BIOS Cylinders",
+		    disk->cylinders, 1, maxcyl);
+		disk->heads = ask_num("BIOS Heads",
+		    disk->heads, 1, maxhead);
+		disk->sectors = ask_num("BIOS Sectors",
+		    disk->sectors, 1, maxsec);
 
-		disk->real->size = disk->real->cylinders * disk->real->heads
-			* disk->real->sectors;
+		disk->size = disk->cylinders * disk->heads * disk->sectors;
 	}
 
 	return (CMD_CONT);
 }
 
-/* ARGSUSED */
 int
-Xswap(cmd_t *cmd, disk_t *disk, mbr_t *mbr, mbr_t *tt, int offset)
+Xswap(char *args, struct disk *disk, struct mbr *mbr, struct mbr *tt,
+    int offset)
 {
 	const char *errstr;
 	char *from, *to;
-	int pf, pt, ret;
-	prt_t pp;
+	int pf, pt;
+	struct prt pp;
 
-	ret = CMD_CONT;
-
-	to = cmd->args;
+	to = args;
 	from = strsep(&to, " \t");
 
 	if (to == NULL) {
 		printf("partition number is invalid:\n");
-		return (ret);
+		return (CMD_CONT);
 	}
 
-	pf = (int)strtonum(from, 0, 3, &errstr);
+	pf = strtonum(from, 0, 3, &errstr);
 	if (errstr) {
 		printf("partition number is %s: %s\n", errstr, from);
-		return (ret);
+		return (CMD_CONT);
 	}
-	pt = (int)strtonum(to, 0, 3, &errstr);
+	pt = strtonum(to, 0, 3, &errstr);
 	if (errstr) {
 		printf("partition number is %s: %s\n", errstr, to);
-		return (ret);
+		return (CMD_CONT);
 	}
 
 	if (pt == pf) {
 		printf("%d same partition as %d, doing nothing.\n", pt, pf);
-		return (ret);
+		return (CMD_CONT);
 	}
 
 	pp = mbr->part[pt];
 	mbr->part[pt] = mbr->part[pf];
 	mbr->part[pf] = pp;
 
-	ret = CMD_DIRTY;
-	return (ret);
+	return (CMD_DIRTY);
 }
 
-
-/* ARGSUSED */
 int
-Xedit(cmd_t *cmd, disk_t *disk, mbr_t *mbr, mbr_t *tt, int offset)
+Xedit(char *args, struct disk *disk, struct mbr *mbr, struct mbr *tt,
+    int offset)
 {
 	const char *errstr;
 	int pn, num, ret;
-	prt_t *pp;
+	struct prt *pp;
 
-	pn = (int)strtonum(cmd->args, 0, 3, &errstr);
+	pn = strtonum(args, 0, 3, &errstr);
 	if (errstr) {
-		printf("partition number is %s: %s\n", errstr, cmd->args);
+		printf("partition number is %s: %s\n", errstr, args);
 		return (CMD_CONT);
 	}
 	pp = &mbr->part[pn];
 
 	/* Edit partition type */
-	ret = Xsetpid(cmd, disk, mbr, tt, offset);
+	ret = Xsetpid(args, disk, mbr, tt, offset);
 
 #define	EDIT(p, v, n, m)					\
 	if ((num = ask_num(p, v, n, m)) != v)	\
@@ -175,9 +171,9 @@ Xedit(cmd_t *cmd, disk_t *disk, mbr_t *mbr, mbr_t *tt, int offset)
 		int maxcyl, maxhead, maxsect;
 
 		/* Shorter */
-		maxcyl = disk->real->cylinders - 1;
-		maxhead = disk->real->heads - 1;
-		maxsect = disk->real->sectors;
+		maxcyl = disk->cylinders - 1;
+		maxhead = disk->heads - 1;
+		maxsect = disk->sectors;
 
 		/* Get data */
 		EDIT("BIOS Starting cylinder", pp->scyl,  0, maxcyl);
@@ -192,9 +188,9 @@ Xedit(cmd_t *cmd, disk_t *disk, mbr_t *mbr, mbr_t *tt, int offset)
 		PRT_fix_CHS(disk, pp);
 	} else {
 		pp->bs = getuint(disk, "Partition offset", pp->bs,
-		    disk->real->size);
+		    disk->size);
 		pp->ns = getuint(disk, "Partition size", pp->ns,
-		    disk->real->size - pp->bs);
+		    disk->size - pp->bs);
 		/* Fix up CHS values */
 		PRT_fix_CHS(disk, pp);
 	}
@@ -202,20 +198,18 @@ Xedit(cmd_t *cmd, disk_t *disk, mbr_t *mbr, mbr_t *tt, int offset)
 	return (ret);
 }
 
-/* ARGSUSED */
 int
-Xsetpid(cmd_t *cmd, disk_t *disk, mbr_t *mbr, mbr_t *tt, int offset)
+Xsetpid(char *args, struct disk *disk, struct mbr *mbr, struct mbr *tt,
+    int offset)
 {
 	const char *errstr;
-	int pn, num, ret;
-	prt_t *pp;
+	int pn, num;
+	struct prt *pp;
 
-	ret = CMD_CONT;
-
-	pn = (int)strtonum(cmd->args, 0, 3, &errstr);
+	pn = strtonum(args, 0, 3, &errstr);
 	if (errstr) {
-		printf("partition number is %s: %s\n", errstr, cmd->args);
-		return (ret);
+		printf("partition number is %s: %s\n", errstr, args);
+		return (CMD_CONT);
 	}
 	pp = &mbr->part[pn];
 
@@ -225,26 +219,25 @@ Xsetpid(cmd_t *cmd, disk_t *disk, mbr_t *mbr, mbr_t *tt, int offset)
 
 	/* Ask for partition type */
 	num = ask_pid(pp->id);
-	if (num != pp->id)
-		ret = CMD_DIRTY;
+	if (num == pp->id)
+		return (CMD_CONT);
 
 	pp->id = num;
-
-	return (ret);
+	return (CMD_DIRTY);
 }
 
-/* ARGSUSED */
 int
-Xselect(cmd_t *cmd, disk_t *disk, mbr_t *mbr, mbr_t *tt, int offset)
+Xselect(char *args, struct disk *disk, struct mbr *mbr, struct mbr *tt,
+    int offset)
 {
 	const char *errstr;
 	static int firstoff = 0;
 	int off;
 	int pn;
 
-	pn = (int)strtonum(cmd->args, 0, 3, &errstr);
+	pn = strtonum(args, 0, 3, &errstr);
 	if (errstr) {
-		printf("partition number is %s: %s\n", errstr, cmd->args);
+		printf("partition number is %s: %s\n", errstr, args);
 		return (CMD_CONT);
 	}
 
@@ -273,23 +266,23 @@ Xselect(cmd_t *cmd, disk_t *disk, mbr_t *mbr, mbr_t *tt, int offset)
 	return (CMD_CONT);
 }
 
-/* ARGSUSED */
 int
-Xprint(cmd_t *cmd, disk_t *disk, mbr_t *mbr, mbr_t *tt, int offset)
+Xprint(char *args, struct disk *disk, struct mbr *mbr, struct mbr *tt,
+    int offset)
 {
 
-	DISK_printmetrics(disk, cmd->args);
+	DISK_printgeometry(disk, args);
 	printf("Offset: %d\t", offset);
-	MBR_print(mbr, cmd->args);
+	MBR_print(mbr, args);
 
 	return (CMD_CONT);
 }
 
-/* ARGSUSED */
 int
-Xwrite(cmd_t *cmd, disk_t *disk, mbr_t *mbr, mbr_t *tt, int offset)
+Xwrite(char *args, struct disk *disk, struct mbr *mbr, struct mbr *tt,
+    int offset)
 {
-	char mbr_buf[DEV_BSIZE];
+	struct dos_mbr dos_mbr;
 	int fd, i, n;
 
 	for (i = 0, n = 0; i < NDOSPART; i++)
@@ -302,10 +295,10 @@ Xwrite(cmd_t *cmd, disk_t *disk, mbr_t *mbr, mbr_t *tt, int offset)
 	}
 
 	fd = DISK_open(disk->name, O_RDWR);
-	MBR_make(mbr, mbr_buf);
+	MBR_make(mbr, &dos_mbr);
 
 	printf("Writing MBR at offset %d.\n", offset);
-	if (MBR_write(fd, offset, mbr_buf) == -1) {
+	if (MBR_write(fd, offset, &dos_mbr) == -1) {
 		int saved_errno = errno;
 		warn("error writing MBR");
 		close(fd);
@@ -315,28 +308,23 @@ Xwrite(cmd_t *cmd, disk_t *disk, mbr_t *mbr, mbr_t *tt, int offset)
 	close(fd);
 
 	/* Refresh in memory copy to reflect what was just written. */
-	MBR_parse(disk, mbr_buf, mbr->offset, mbr->reloffset, mbr);
+	MBR_parse(disk, &dos_mbr, mbr->offset, mbr->reloffset, mbr);
 
 	return (CMD_CLEAN);
 }
 
-/* ARGSUSED */
 int
-Xquit(cmd, disk, r, tt, offset)
-	cmd_t *cmd;
-	disk_t *disk;
-	mbr_t *r;
-	mbr_t *tt;
-	int offset;
+Xquit(char *args, struct disk *disk, struct mbr *mbr, struct mbr *tt,
+    int offset)
 {
 
 	/* Nothing to do here */
 	return (CMD_SAVE);
 }
 
-/* ARGSUSED */
 int
-Xabort(cmd_t *cmd, disk_t *disk, mbr_t *mbr, mbr_t *tt, int offset)
+Xabort(char *args, struct disk *disk, struct mbr *mbr, struct mbr *tt,
+    int offset)
 {
 	exit(0);
 
@@ -344,53 +332,49 @@ Xabort(cmd_t *cmd, disk_t *disk, mbr_t *mbr, mbr_t *tt, int offset)
 	return (CMD_CONT);
 }
 
-
-/* ARGSUSED */
 int
-Xexit(cmd_t *cmd, disk_t *disk, mbr_t *mbr, mbr_t *tt, int offset)
+Xexit(char *args, struct disk *disk, struct mbr *mbr, struct mbr *tt,
+    int offset)
 {
 
 	/* Nothing to do here */
 	return (CMD_EXIT);
 }
 
-/* ARGSUSED */
 int
-Xhelp(cmd_t *cmd, disk_t *disk, mbr_t *mbr, mbr_t *tt, int offset)
+Xhelp(char *args, struct disk *disk, struct mbr *mbr, struct mbr *tt,
+    int offset)
 {
-	cmd_table_t *cmd_table = cmd->table;
 	int i;
 
-	/* Hmm, print out cmd_table here... */
 	for (i = 0; cmd_table[i].cmd != NULL; i++)
 		printf("\t%s\t\t%s\n", cmd_table[i].cmd, cmd_table[i].help);
 	return (CMD_CONT);
 }
 
-/* ARGSUSED */
 int
-Xupdate(cmd_t *cmd, disk_t *disk, mbr_t *mbr, mbr_t *tt, int offset)
+Xupdate(char *args, struct disk *disk, struct mbr *mbr, struct mbr *tt,
+    int offset)
 {
-
 	/* Update code */
-	memcpy(mbr->code, tt->code, MBR_CODE_SIZE);
+	memcpy(mbr->code, tt->code, sizeof(mbr->code));
 	mbr->signature = DOSMBR_SIGNATURE;
 	printf("Machine code updated.\n");
 	return (CMD_DIRTY);
 }
 
-/* ARGSUSED */
 int
-Xflag(cmd_t *cmd, disk_t *disk, mbr_t *mbr, mbr_t *tt, int offset)
+Xflag(char *args, struct disk *disk, struct mbr *mbr, struct mbr *tt,
+    int offset)
 {
 	const char *errstr;
 	int i, pn = -1, val = -1;
 	char *part, *flag;
 
-	flag = cmd->args;
+	flag = args;
 	part = strsep(&flag, " \t");
 
-	pn = (int)strtonum(part, 0, 3, &errstr);
+	pn = strtonum(part, 0, 3, &errstr);
 	if (errstr) {
 		printf("partition number is %s: %s.\n", errstr, part);
 		return (CMD_CONT);
@@ -420,9 +404,9 @@ Xflag(cmd_t *cmd, disk_t *disk, mbr_t *mbr, mbr_t *tt, int offset)
 	return (CMD_DIRTY);
 }
 
-/* ARGSUSED */
 int
-Xmanual(cmd_t *cmd, disk_t *disk, mbr_t *mbr, mbr_t *tt, int offset)
+Xmanual(char *args, struct disk *disk, struct mbr *mbr, struct mbr *tt,
+    int offset)
 {
 	char *pager = "/usr/bin/less";
 	char *p;
@@ -437,13 +421,12 @@ Xmanual(cmd_t *cmd, disk_t *disk, mbr_t *mbr, mbr_t *tt, int offset)
 	if (asprintf(&p, "gunzip -qc|%s", pager) != -1) {
 		f = popen(p, "w");
 		if (f) {
-			(void) fwrite(manpage, manpage_sz, 1, f);
+			fwrite(manpage, manpage_sz, 1, f);
 			pclose(f);
 		}
 		free(p);
 	}
 
-	(void)signal(SIGPIPE, opipe);
+	signal(SIGPIPE, opipe);
 	return (CMD_CONT);
 }
-

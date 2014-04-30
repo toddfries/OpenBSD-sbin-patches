@@ -1,4 +1,4 @@
-/*	$OpenBSD: mbr.c,v 1.32 2014/02/05 03:51:07 krw Exp $	*/
+/*	$OpenBSD: mbr.c,v 1.39 2014/03/31 19:50:52 krw Exp $	*/
 
 /*
  * Copyright (c) 1997 Tobias Weingartner
@@ -29,6 +29,7 @@
 #include <sys/fcntl.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <sys/param.h>
 #include <sys/disklabel.h>
 #include <sys/dkio.h>
 #include <err.h>
@@ -38,14 +39,14 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <memory.h>
+
 #include "disk.h"
+#include "part.h"
 #include "misc.h"
 #include "mbr.h"
-#include "part.h"
-
 
 void
-MBR_init(disk_t *disk, mbr_t *mbr)
+MBR_init(struct disk *disk, struct mbr *mbr)
 {
 	daddr_t i;
 	u_int64_t adj;
@@ -60,20 +61,20 @@ MBR_init(disk_t *disk, mbr_t *mbr)
 
 	/* Use whole disk. Reserve first track, or first cyl, if possible. */
 	mbr->part[3].id = DOSPTYP_OPENBSD;
-	if (disk->real->heads > 1)
+	if (disk->heads > 1)
 		mbr->part[3].shead = 1;
 	else
 		mbr->part[3].shead = 0;
-	if (disk->real->heads < 2 && disk->real->cylinders > 1)
+	if (disk->heads < 2 && disk->cylinders > 1)
 		mbr->part[3].scyl = 1;
 	else
 		mbr->part[3].scyl = 0;
 	mbr->part[3].ssect = 1;
 
 	/* Go right to the end */
-	mbr->part[3].ecyl = disk->real->cylinders - 1;
-	mbr->part[3].ehead = disk->real->heads - 1;
-	mbr->part[3].esect = disk->real->sectors;
+	mbr->part[3].ecyl = disk->cylinders - 1;
+	mbr->part[3].ehead = disk->heads - 1;
+	mbr->part[3].esect = disk->sectors;
 
 	/* Fix up start/length fields */
 	PRT_fix_BN(disk, &mbr->part[3], 3);
@@ -107,41 +108,49 @@ MBR_init(disk_t *disk, mbr_t *mbr)
 }
 
 void
-MBR_parse(disk_t *disk, char *mbr_buf, off_t offset, off_t reloff, mbr_t *mbr)
+MBR_parse(struct disk *disk, struct dos_mbr *dos_mbr, off_t offset,
+    off_t reloff, struct mbr *mbr)
 {
+	struct dos_partition dos_partition;
 	int i;
 
-	memcpy(mbr->code, mbr_buf, MBR_CODE_SIZE);
+	memcpy(mbr->code, dos_mbr->dmbr_boot, sizeof(mbr->code));
 	mbr->offset = offset;
 	mbr->reloffset = reloff;
-	mbr->signature = getshort(&mbr_buf[MBR_SIG_OFF]);
+	mbr->signature = letoh16(dos_mbr->dmbr_sign);
 
-	for (i = 0; i < NDOSPART; i++)
-		PRT_parse(disk, &mbr_buf[MBR_PART_OFF + MBR_PART_SIZE * i],
-		    offset, reloff, &mbr->part[i]);
+	for (i = 0; i < NDOSPART; i++) {
+		memcpy(&dos_partition, &dos_mbr->dmbr_parts[i],
+		    sizeof(dos_partition));
+		PRT_parse(disk, &dos_partition, offset, reloff,
+		    &mbr->part[i]);
+	}
 }
 
 void
-MBR_make(mbr_t *mbr, char *mbr_buf)
+MBR_make(struct mbr *mbr, struct dos_mbr *dos_mbr)
 {
+	struct dos_partition dos_partition;
 	int i;
 
-	memcpy(mbr_buf, mbr->code, MBR_CODE_SIZE);
-	putshort(&mbr_buf[MBR_SIG_OFF], DOSMBR_SIGNATURE);
+	memcpy(dos_mbr->dmbr_boot, mbr->code, sizeof(dos_mbr->dmbr_boot));
+	dos_mbr->dmbr_sign = htole16(DOSMBR_SIGNATURE);
 
-	for (i = 0; i < NDOSPART; i++)
+	for (i = 0; i < NDOSPART; i++) {
 		PRT_make(&mbr->part[i], mbr->offset, mbr->reloffset,
-		    &mbr_buf[MBR_PART_OFF + MBR_PART_SIZE * i]);
+		    &dos_partition);
+		memcpy(&dos_mbr->dmbr_parts[i], &dos_partition,
+		    sizeof(dos_mbr->dmbr_parts[i]));
+	}
 }
 
 void
-MBR_print(mbr_t *mbr, char *units)
+MBR_print(struct mbr *mbr, char *units)
 {
 	int i;
 
 	/* Header */
-	printf("Signature: 0x%X\n",
-	    (int)mbr->signature);
+	printf("Signature: 0x%X\n", (int)mbr->signature);
 	PRT_print(0, NULL, units);
 
 	/* Entries */
@@ -150,7 +159,7 @@ MBR_print(mbr_t *mbr, char *units)
 }
 
 int
-MBR_read(int fd, off_t where, char *buf)
+MBR_read(int fd, off_t where, struct dos_mbr *dos_mbr)
 {
 	const int secsize = unit_types[SECTORS].conversion;
 	ssize_t len;
@@ -162,18 +171,17 @@ MBR_read(int fd, off_t where, char *buf)
 	if (off != where)
 		return (-1);
 
-	secbuf = malloc(secsize);
+	secbuf = calloc(1, secsize);
 	if (secbuf == NULL)
 		return (-1);
-	bzero(secbuf, secsize);
 
 	len = read(fd, secbuf, secsize);
-	bcopy(secbuf, buf, DEV_BSIZE);
+	memcpy(dos_mbr, secbuf, sizeof(*dos_mbr));
 	free(secbuf);
 
 	if (len == -1)
 		return (-1);
-	if (len < DEV_BSIZE) {
+	if (len < sizeof(*dos_mbr)) {
 		/* short read */
 		errno = EIO;
 		return (-1);
@@ -183,7 +191,7 @@ MBR_read(int fd, off_t where, char *buf)
 }
 
 int
-MBR_write(int fd, off_t where, char *buf)
+MBR_write(int fd, off_t where, struct dos_mbr *dos_mbr)
 {
 	const int secsize = unit_types[SECTORS].conversion;
 	ssize_t len;
@@ -196,20 +204,19 @@ MBR_write(int fd, off_t where, char *buf)
 	if (off != where)
 		return (-1);
 
-	secbuf = malloc(secsize);
+	secbuf = calloc(1, secsize);
 	if (secbuf == NULL)
 		return (-1);
-	bzero(secbuf, secsize);
 
 	len = read(fd, secbuf, secsize);
 	if (len == -1 || len != secsize)
 		goto done;
 
 	/*
-	 * Place the new MBR in the first DEV_BSIZE bytes of the sector and
+	 * Place the new MBR at the start of the sector and
 	 * write the sector back to "disk".
 	 */
-	bcopy(buf, secbuf, DEV_BSIZE);
+	memcpy(secbuf, dos_mbr, sizeof(*dos_mbr));
 	off = lseek(fd, where, SEEK_SET);
 	if (off == where)
 		len = write(fd, secbuf, secsize);
@@ -231,25 +238,22 @@ done:
 }
 
 /*
- * Copy partition table from the disk indicated
- * to the supplied mbr structure
+ * Parse the MBR partition table into 'mbr', leaving the rest of 'mbr'
+ * untouched.
  */
 void
-MBR_pcopy(disk_t *disk, mbr_t *mbr)
+MBR_pcopy(struct disk *disk, struct mbr *mbr)
 {
-	int i, fd, error, offset = 0, reloff = 0;
-	mbr_t mbrd;
-	char mbr_disk[DEV_BSIZE];
+	int i, fd, error;
+	struct dos_mbr dos_mbr;
 
 	fd = DISK_open(disk->name, O_RDONLY);
-	error = MBR_read(fd, offset, mbr_disk);
+	error = MBR_read(fd, 0, &dos_mbr);
 	close(fd);
+
 	if (error == -1)
 		return;
-	MBR_parse(disk, mbr_disk, offset, reloff, &mbrd);
-	for (i = 0; i < NDOSPART; i++) {
-		PRT_parse(disk, &mbr_disk[MBR_PART_OFF +
-		    MBR_PART_SIZE * i],
-		    offset, reloff, &mbr->part[i]);
-	}
+
+	for (i = 0; i < NDOSPART; i++)
+		PRT_parse(disk, &dos_mbr.dmbr_parts[i], 0, 0, &mbr->part[i]);
 }

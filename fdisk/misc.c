@@ -1,4 +1,4 @@
-/*	$OpenBSD: misc.c,v 1.32 2013/11/22 04:12:47 deraadt Exp $	*/
+/*	$OpenBSD: misc.c,v 1.42 2014/03/31 19:50:52 krw Exp $	*/
 
 /*
  * Copyright (c) 1997 Tobias Weingartner
@@ -27,18 +27,20 @@
 
 #include <sys/types.h>
 #include <sys/disklabel.h>
-#include <err.h>
-#include <stdio.h>
 #include <ctype.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <err.h>
 #include <errno.h>
-#include <limits.h>
+
+#include "disk.h"
 #include "misc.h"
+#include "part.h"
 
 struct unit_type unit_types[] = {
 	{"b", 1			, "Bytes"},
-	{" ", DEV_BSIZE		, "Sectors"},
+	{" ", 0			, "Sectors"},	/* Filled in from disklabel. */
 	{"K", 1024		, "Kilobytes"},
 	{"M", 1024 * 1024	, "Megabytes"},
 	{"G", 1024 * 1024 *1024	, "Gigabytes"},
@@ -50,7 +52,7 @@ unit_lookup(char *units)
 {
 	int i = 0;
 	if (units == NULL)
-		return (UNIT_TYPE_DEFAULT);
+		return (SECTORS);
 
 	while (unit_types[i].abbr != NULL) {
 		if (strncasecmp(unit_types[i].abbr, units, 1) == 0)
@@ -59,15 +61,16 @@ unit_lookup(char *units)
 	}
 	/* default */
 	if (unit_types[i].abbr == NULL)
-		return (UNIT_TYPE_DEFAULT);
+		return (SECTORS);
 
 	return (i);
 }
 
 int
-ask_cmd(cmd_t *cmd)
+ask_cmd(char **cmd, char **args)
 {
-	char lbuf[100], *cp, *buf;
+	static char lbuf[100];
+	char *cp, *buf;
 	size_t lbuflen;
 
 	/* Get input */
@@ -82,9 +85,8 @@ ask_cmd(cmd_t *cmd)
 	buf = &buf[strspn(buf, " \t")];
 	cp = &buf[strcspn(buf, " \t")];
 	*cp++ = '\0';
-	strncpy(cmd->cmd, buf, sizeof(cmd->cmd));
-	buf = &cp[strspn(cp, " \t")];
-	strncpy(cmd->args, buf, sizeof(cmd->args));
+	*cmd = buf;
+	*args = &cp[strspn(cp, " \t")];
 
 	return (0);
 }
@@ -130,7 +132,7 @@ ask_pid(int dflt)
 {
 	char lbuf[100], *cp;
 	size_t lbuflen;
-	int num;
+	int num = -1;
 	const int low = 0, high = 0xff;
 
 	if (dflt < low)
@@ -139,7 +141,6 @@ ask_pid(int dflt)
 		dflt = high;
 
 	do {
-again:
 		printf("Partition id ('0' to disable) [%X - %X]: [%X] ", low,
 		    high, dflt);
 		printf("(? for help) ");
@@ -152,7 +153,7 @@ again:
 
 		if (lbuf[0] == '?') {
 			PRT_printall();
-			goto again;
+			continue;
 		}
 
 		/* Convert */
@@ -195,47 +196,11 @@ ask_yn(const char *str)
 	return (first == 'y' || first == 'Y');
 }
 
-u_int16_t
-getshort(void *p)
-{
-	unsigned char *cp = p;
-
-	return (cp[0] | (cp[1] << 8));
-}
-
-void
-putshort(void *p, u_int16_t l)
-{
-	unsigned char *cp = p;
-
-	*cp++ = l;
-	*cp++ = l >> 8;
-}
-
-u_int32_t
-getlong(void *p)
-{
-	unsigned char *cp = p;
-
-	return (cp[0] | (cp[1] << 8) | (cp[2] << 16) | (cp[3] << 24));
-}
-
-void
-putlong(void *p, u_int32_t l)
-{
-	unsigned char *cp = p;
-
-	*cp++ = l;
-	*cp++ = l >> 8;
-	*cp++ = l >> 16;
-	*cp++ = l >> 24;
-}
-
 /*
  * adapted from sbin/disklabel/editor.c
  */
 u_int32_t
-getuint(disk_t *disk, char *prompt, u_int32_t oval, u_int32_t maxval)
+getuint(struct disk *disk, char *prompt, u_int32_t oval, u_int32_t maxval)
 {
 	char buf[BUFSIZ], *endptr, *p, operator = '\0';
 	size_t n;
@@ -247,7 +212,7 @@ getuint(disk_t *disk, char *prompt, u_int32_t oval, u_int32_t maxval)
 	if (oval > maxval)
 		oval = maxval;
 
-	secpercyl = disk->real->sectors * disk->real->heads;
+	secpercyl = disk->sectors * disk->heads;
 
 	do {
 		printf("%s: [%u] ", prompt, oval);

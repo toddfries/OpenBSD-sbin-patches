@@ -1,4 +1,4 @@
-/*	$OpenBSD: editor.c,v 1.282 2014/02/22 13:27:46 krw Exp $	*/
+/*	$OpenBSD: editor.c,v 1.284 2014/04/21 08:19:38 krw Exp $	*/
 
 /*
  * Copyright (c) 1997-2000 Todd C. Miller <Todd.Miller@courtesan.com>
@@ -138,6 +138,7 @@ void	set_bounds(struct disklabel *);
 void	set_duid(struct disklabel *);
 struct diskchunk *free_chunks(struct disklabel *);
 void	mpcopy(char **, char **);
+void	mpfree(char **);
 int	micmp(const void *, const void *);
 int	mpequal(char **, char **);
 int	get_bsize(struct disklabel *, int);
@@ -500,9 +501,9 @@ editor(int f)
 		}
 	}
 done:
-	free(omountpoints);
-	free(origmountpoints);
-	free(tmpmountpoints);
+	mpfree(omountpoints);
+	mpfree(origmountpoints);
+	mpfree(tmpmountpoints);
 	if (disk_geop)
 		free(disk_geop);
 	return(error);
@@ -1803,17 +1804,12 @@ mpcopy(char **to, char **from)
 	char *top;
 
 	for (i = 0; i < MAXPARTITIONS; i++) {
+		free(to[i]);
+		to[i] = NULL;
 		if (from[i] != NULL) {
-			int len = strlen(from[i]) + 1;
-
-			top = realloc(to[i], len);
-			if (top == NULL)
+			to[i] = strdup(from[i]);
+			if (to[i] == NULL)
 				errx(4, "out of memory");
-			to[i] = top;
-			(void)strlcpy(to[i], from[i], len);
-		} else if (to[i] != NULL) {
-			free(to[i]);
-			to[i] = NULL;
 		}
 	}
 }
@@ -1894,6 +1890,20 @@ mpsave(struct disklabel *lp)
 		}
 		fclose(fp);
 	}
+}
+
+void
+mpfree(char **mp)
+{
+	int part;
+	
+	if (mp == NULL)
+		return;
+	
+	for (part == 0; part < MAXPARTITIONS; part++)
+		free(mp[part]);
+	
+	free(mp);
 }
 
 int
@@ -2042,7 +2052,7 @@ get_bsize(struct disklabel *lp, int partno)
 
 	for (;;) {
 		ui = getuint64(lp, "block size",
-		    "Size of ffs blocks. A multiple of the ffs fragment size.",
+		    "Size of ffs blocks. 1, 2, 4 or 8 times ffs fragment size.",
 		    fsize * frag, ULLONG_MAX - 2, 0, 0);
 
 		/* sanity checks */
@@ -2055,14 +2065,16 @@ get_bsize(struct disklabel *lp, int partno)
 			fprintf(stderr,
 			    "Error: block size must be at least as big "
 			    "as page size (%d).\n", getpagesize());
-		else if (ui < fsize || (ui % fsize) != 0)
-			fprintf(stderr, "Error: block size must be a multiple "
-			    "of the fragment size (%llu).\n",
+		else if (ui < fsize || (fsize != ui && fsize * 2 != ui &&
+		    fsize * 4 != ui && fsize * 8 != ui))
+			fprintf(stderr, "Error: block size must be 1, 2, 4 or "
+			    "8 times fragment size (%llu).\n",
 			    (unsigned long long) fsize);
 		else
 			break;
 	}
-	pp->p_fragblock = DISKLABELV1_FFS_FRAGBLOCK(ui / frag, frag);
+	frag = ui / fsize;
+	pp->p_fragblock = DISKLABELV1_FFS_FRAGBLOCK(fsize, frag);
 
 #ifndef SUN_CYLCHECK
 	p = getstring("Align partition to block size",

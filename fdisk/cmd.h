@@ -1,4 +1,4 @@
-/*	$OpenBSD: cmd.h,v 1.9 2005/01/19 15:48:20 deraadt Exp $	*/
+/*	$OpenBSD: cmd.h,v 1.13 2014/03/31 22:03:29 krw Exp $	*/
 
 /*
  * Copyright (c) 1997 Tobias Weingartner
@@ -28,51 +28,34 @@
 #ifndef _CMD_H
 #define _CMD_H
 
-/* Includes */
-#include "disk.h"
-#include "mbr.h"
-
-
-/* Constants (returned by cmd funs) */
 #define CMD_EXIT	0x0000
 #define CMD_SAVE	0x0001
 #define CMD_CONT	0x0002
 #define CMD_CLEAN	0x0003
 #define CMD_DIRTY	0x0004
 
-
-/* Data types */
-struct _cmd_table_t;
-typedef struct _cmd_t {
-	struct _cmd_table_t *table;
-	char cmd[10];
-	char args[100];
-} cmd_t;
-
-typedef struct _cmd_table_t {
+struct cmd {
 	char *cmd;
-	int (*fcn)(cmd_t *, disk_t *, mbr_t *, mbr_t *, int);
+	int (*fcn)(char *, struct disk *, struct mbr *, struct mbr *,
+	    int);
 	char *help;
-} cmd_table_t;
+};
+extern struct cmd cmd_table[];
 
-
-/* Prototypes */
-int Xreinit(cmd_t *, disk_t *, mbr_t *, mbr_t *, int);
-int Xdisk(cmd_t *, disk_t *, mbr_t *, mbr_t *, int);
-int Xmanual(cmd_t *, disk_t *, mbr_t *, mbr_t *, int);
-int Xedit(cmd_t *, disk_t *, mbr_t *, mbr_t *, int);
-int Xsetpid(cmd_t *, disk_t *, mbr_t *, mbr_t *, int);
-int Xselect(cmd_t *, disk_t *, mbr_t *, mbr_t *, int);
-int Xswap(cmd_t *, disk_t *, mbr_t *, mbr_t *, int);
-int Xprint(cmd_t *, disk_t *, mbr_t *, mbr_t *, int);
-int Xwrite(cmd_t *, disk_t *, mbr_t *, mbr_t *, int);
-int Xexit(cmd_t *, disk_t *, mbr_t *, mbr_t *, int);
-int Xquit(cmd_t *, disk_t *, mbr_t *, mbr_t *, int);
-int Xabort(cmd_t *, disk_t *, mbr_t *, mbr_t *, int);
-int Xhelp(cmd_t *, disk_t *, mbr_t *, mbr_t *, int);
-int Xflag(cmd_t *, disk_t *, mbr_t *, mbr_t *, int);
-int Xupdate(cmd_t *, disk_t *, mbr_t *, mbr_t *, int);
+int Xreinit(char *, struct  disk *, struct mbr *, struct mbr *, int);
+int Xdisk(char *, struct disk *, struct mbr *, struct mbr *, int);
+int Xmanual(char *, struct disk *, struct mbr *, struct mbr *, int);
+int Xedit(char *, struct disk *, struct mbr *, struct mbr *, int);
+int Xsetpid(char *, struct disk *, struct mbr *, struct mbr *, int);
+int Xselect(char *, struct disk *, struct mbr *, struct mbr *, int);
+int Xswap(char *, struct disk *, struct mbr *, struct mbr *, int);
+int Xprint(char *, struct disk *, struct mbr *, struct mbr *, int);
+int Xwrite(char *, struct disk *, struct mbr *, struct mbr *, int);
+int Xexit(char *, struct disk *, struct mbr *, struct mbr *, int);
+int Xquit(char *, struct disk *, struct mbr *, struct mbr *, int);
+int Xabort(char *, struct disk *, struct mbr *, struct mbr *, int);
+int Xhelp(char *, struct disk *, struct mbr *, struct mbr *, int);
+int Xflag(char *, struct disk *, struct mbr *, struct mbr *, int);
+int Xupdate(char *, struct disk *, struct mbr *, struct mbr *, int);
 
 #endif /* _CMD_H */
-
-

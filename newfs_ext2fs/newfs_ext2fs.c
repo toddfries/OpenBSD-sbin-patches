@@ -1,4 +1,4 @@
-/* $OpenBSD: newfs_ext2fs.c,v 1.9 2013/11/22 04:14:01 deraadt Exp $ */
+/* $OpenBSD: newfs_ext2fs.c,v 1.11 2014/04/22 00:23:35 guenther Exp $ */
 /*	$NetBSD: newfs_ext2fs.c,v 1.8 2009/03/02 10:38:13 tsutsui Exp $	*/
 
 /*
@@ -298,7 +298,7 @@ main(int argc, char *argv[])
 			static const char m[] =
 			    "%s partition type is not `%s' (or use -I)";
 			if (pp->p_fstype != FS_EXT2FS)
-				errx(EXIT_FAILURE, m, special, "Linux Ext2");
+				errx(EXIT_FAILURE, m, special, "ext2fs");
 		}
 		if (sectorsize == 0) {
 			sectorsize = lp->d_secsize;
@@ -337,7 +337,7 @@ main(int argc, char *argv[])
 			bufsize = sfs.f_iosize;
 
 		if ((buf = calloc(1, bufsize)) == NULL)
-			err(1, "can't malloc buffer of %d",
+			err(1, "can't allocate buffer of %d",
 			bufsize);
 		bufrem = fssize * sectorsize;
 		if (verbosity > 0)
@@ -452,7 +452,7 @@ static const char help_strings[] =
 	"\t-D inodesize\tsize of an inode in bytes (128 or 256)\n"
 	"\t-F \t\tcreate file system image in regular file\n"
 	"\t-f fsize\tfragment size\n"
-	"\t-I \t\tdo not check that the file system type is `Linux Ext2'\n"
+	"\t-I \t\tdo not check that the file system type is `ext2fs'\n"
 	"\t-i density\tnumber of bytes per inode\n"
 	"\t-m minfree\tminimum free space %\n"
 	"\t-N \t\tdo not create file system, just print out parameters\n"

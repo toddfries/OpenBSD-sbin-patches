@@ -1,4 +1,4 @@
-/*	$OpenBSD: ping.c,v 1.99 2014/01/10 21:57:44 florian Exp $	*/
+/*	$OpenBSD: ping.c,v 1.103 2014/04/28 15:25:34 florian Exp $	*/
 /*	$NetBSD: ping.c,v 1.20 1995/08/11 22:37:58 cgd Exp $	*/
 
 /*
@@ -70,6 +70,7 @@
 #include <ctype.h>
 #include <err.h>
 #include <errno.h>
+#include <poll.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -100,7 +101,7 @@ int options;
 #define	F_QUIET		0x0010
 #define	F_RROUTE	0x0020
 #define	F_SO_DEBUG	0x0040
-#define	F_SO_DONTROUTE	0x0080
+/*			0x0080 */
 #define	F_VERBOSE	0x0100
 #define	F_SADDR		0x0200
 #define	F_HDRINCL	0x0400
@@ -175,11 +176,10 @@ void usage(void);
 int
 main(int argc, char *argv[])
 {
-	struct timeval timeout;
 	struct hostent *hp;
 	struct sockaddr_in *to;
 	struct in_addr saddr;
-	int i, ch, hold = 1, packlen, preload, maxsize, df = 0, tos = 0;
+	int ch, hold = 1, i, packlen, preload, maxsize, df = 0, tos = 0;
 	u_char *datap, *packet, ttl = MAXTTL, loop = 1;
 	char *target, hnamebuf[MAXHOSTNAMELEN];
 #ifdef IP_OPTIONS
@@ -187,8 +187,6 @@ main(int argc, char *argv[])
 #endif
 	socklen_t maxsizelen;
 	const char *errstr;
-	fd_set *fdmaskp;
-	size_t fdmasks;
 	uid_t uid;
 	u_int rtableid;
 
@@ -203,7 +201,7 @@ main(int argc, char *argv[])
 	preload = 0;
 	datap = &outpack[8 + sizeof(struct tv32)];
 	while ((ch = getopt(argc, argv,
-	    "DEI:LRS:c:defi:l:np:qrs:T:t:V:vw:")) != -1)
+	    "DEI:LRS:c:defi:l:np:qs:T:t:V:vw:")) != -1)
 		switch(ch) {
 		case 'c':
 			npackets = (unsigned long)strtonum(optarg, 0,
@@ -282,9 +280,6 @@ main(int argc, char *argv[])
 			break;
 		case 'R':
 			options |= F_RROUTE;
-			break;
-		case 'r':
-			options |= F_SO_DONTROUTE;
 			break;
 		case 's':		/* size of packet to send */
 			datalen = (unsigned int)strtonum(optarg, 0, MAXPAYLOAD, &errstr);
@@ -403,9 +398,6 @@ main(int argc, char *argv[])
 	if (options & F_SO_DEBUG)
 		(void)setsockopt(s, SOL_SOCKET, SO_DEBUG, &hold,
 		    sizeof(hold));
-	if (options & F_SO_DONTROUTE)
-		(void)setsockopt(s, SOL_SOCKET, SO_DONTROUTE, &hold,
-		    sizeof(hold));
 
 	if (options & F_TTL) {
 		if (IN_MULTICAST(ntohl(to->sin_addr.s_addr)))
@@ -513,26 +505,26 @@ main(int argc, char *argv[])
 	if ((options & F_FLOOD) == 0)
 		catcher(0);		/* start things going */
 
-	fdmasks = howmany(s+1, NFDBITS) * sizeof(fd_mask);
-	if ((fdmaskp = (fd_set *)malloc(fdmasks)) == NULL)
-		err(1, "malloc");
-
 	for (;;) {
-		struct sockaddr_in from;
-		sigset_t omask, nmask;
-		socklen_t fromlen;
-		int cc;
+		struct sockaddr_in	from;
+		sigset_t		omask, nmask;
+		socklen_t		fromlen;
+		struct pollfd		pfd;
+		ssize_t			cc;
+		int			timeout;
 
 		if (options & F_FLOOD) {
 			pinger();
-			timeout.tv_sec = 0;
-			timeout.tv_usec = 10000;
-			memset(fdmaskp, 0, fdmasks);
-			FD_SET(s, fdmaskp);
-			if (select(s + 1, (fd_set *)fdmaskp, (fd_set *)NULL,
-			    (fd_set *)NULL, &timeout) < 1)
-				continue;
-		}
+			timeout = 10;
+		} else
+			timeout = INFTIM;
+
+		pfd.fd = s;
+		pfd.events = POLLIN;
+
+		if (poll(&pfd, 1, timeout) <= 0)
+			continue;
+
 		fromlen = sizeof(from);
 		if ((cc = recvfrom(s, packet, packlen, 0,
 		    (struct sockaddr *)&from, &fromlen)) < 0) {
@@ -549,7 +541,6 @@ main(int argc, char *argv[])
 		if (npackets && nreceived >= npackets)
 			break;
 	}
-	free(fdmaskp);
 	finish(0);
 	/* NOTREACHED */
 	exit(0);	/* Make the compiler happy */
@@ -1420,7 +1411,7 @@ void
 usage(void)
 {
 	(void)fprintf(stderr,
-	    "usage: ping [-DdEefLnqRrv] [-c count] [-I ifaddr] [-i wait]\n"
+	    "usage: ping [-DdEefLnqRv] [-c count] [-I ifaddr] [-i wait]\n"
 	    "\t[-l preload] [-p pattern] [-s packetsize]"
 #ifndef	SMALL
 	    " [-T toskeyword]"

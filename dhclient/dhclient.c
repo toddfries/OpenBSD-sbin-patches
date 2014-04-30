@@ -1,4 +1,4 @@
-/*	$OpenBSD: dhclient.c,v 1.293 2014/02/09 20:45:56 krw Exp $	*/
+/*	$OpenBSD: dhclient.c,v 1.299 2014/04/21 15:26:50 krw Exp $	*/
 
 /*
  * Copyright 2004 Henning Brauer <henning@openbsd.org>
@@ -83,8 +83,8 @@ volatile sig_atomic_t quit;
 struct in_addr deleting;
 struct in_addr adding;
 
-struct in_addr inaddr_any;
-struct sockaddr_in sockaddr_broadcast;
+const struct in_addr inaddr_any = { INADDR_ANY };
+const struct in_addr inaddr_broadcast = { INADDR_BROADCAST };
 
 struct interface_info *ifi;
 struct client_state *client;
@@ -96,7 +96,7 @@ int		 findproto(char *, int);
 struct sockaddr	*get_ifa(char *, int);
 void		 usage(void);
 int		 res_hnok(const char *dn);
-char		*option_as_string(unsigned int code, unsigned char *data, int len);
+
 void		 fork_privchld(int, int);
 void		 get_ifname(char *);
 char		*resolv_conf_contents(struct option_data  *,
@@ -348,6 +348,11 @@ routehandler(void)
 				client->state = S_REBOOTING;
 				state_reboot();
 			} else {
+				/* Let monitoring programs see link loss. */
+				write_file(path_option_db,
+				    O_WRONLY | O_CREAT | O_TRUNC | O_SYNC |
+				    O_EXLOCK | O_NOFOLLOW, S_IRUSR | S_IWUSR |
+				    S_IRGRP, 0, 0, "", 0);
 				/* No need to wait for anything but link. */
 				cancel_timeout();
 			}
@@ -389,7 +394,7 @@ int
 main(int argc, char *argv[])
 {
 	struct stat sb;
-	int	 ch, fd, quiet = 0, i = 0, socket_fd[2];
+	int	 ch, fd, i = 0, socket_fd[2];
 	extern char *__progname;
 	struct passwd *pw;
 	char *ignore_list = NULL;
@@ -430,7 +435,7 @@ main(int argc, char *argv[])
 			}
 			break;
 		case 'q':
-			quiet = 1;
+			log_perror = 0;
 			break;
 		case 'u':
 			unknown_ok = 0;
@@ -463,17 +468,7 @@ main(int argc, char *argv[])
 	    _PATH_DHCLIENT_DB, ifi->name) == -1)
 		error("asprintf");
 
-	if (quiet)
-		log_perror = 0;
-
 	tzset();
-
-	memset(&sockaddr_broadcast, 0, sizeof(sockaddr_broadcast));
-	sockaddr_broadcast.sin_family = AF_INET;
-	sockaddr_broadcast.sin_port = htons(REMOTE_PORT);
-	sockaddr_broadcast.sin_addr.s_addr = INADDR_BROADCAST;
-	sockaddr_broadcast.sin_len = sizeof(sockaddr_broadcast);
-	inaddr_any.s_addr = INADDR_ANY;
 
 	/* Put us into the correct rdomain */
 	ifi->rdomain = get_rdomain(ifi->name);
@@ -686,16 +681,12 @@ state_selecting(void)
 
 	while (!TAILQ_EMPTY(&client->offered_leases)) {
 		lp = TAILQ_FIRST(&client->offered_leases);
-		TAILQ_REMOVE(&client->leases, lp, next);
+		TAILQ_REMOVE(&client->offered_leases, lp, next);
 		make_decline(lp);
 		send_decline();
 		free_client_lease(lp);
 	}
 
-	/*
-	 * If we just tossed all the leases we were offered, go back
-	 *  to square one.
-	 */
 	if (!picked) {
 		state_panic();
 		return;
@@ -1227,12 +1218,10 @@ send_discover(void)
 		client->bootrequest_packet.secs = htons(65535);
 	client->secs = client->bootrequest_packet.secs;
 
-	note("DHCPDISCOVER on %s to %s port %hu interval %lld",
-	    ifi->name, inet_ntoa(sockaddr_broadcast.sin_addr),
-	    ntohs(sockaddr_broadcast.sin_port),
+	note("DHCPDISCOVER on %s - interval %lld", ifi->name,
 	    (long long)client->interval);
 
-	send_packet(inaddr_any, &sockaddr_broadcast, NULL);
+	send_packet(inaddr_any, inaddr_broadcast);
 
 	set_timeout_interval(client->interval, send_discover);
 }
@@ -1405,9 +1394,6 @@ send_request(void)
 		destination.sin_addr.s_addr = INADDR_BROADCAST;
 	else
 		destination.sin_addr.s_addr = client->destination.s_addr;
-	destination.sin_port = htons(REMOTE_PORT);
-	destination.sin_family = AF_INET;
-	destination.sin_len = sizeof(destination);
 
 	if (client->state != S_REQUESTING)
 		from.s_addr = client->active->address.s_addr;
@@ -1427,7 +1413,7 @@ send_request(void)
 	note("DHCPREQUEST on %s to %s port %hu", ifi->name,
 	    inet_ntoa(destination.sin_addr), ntohs(destination.sin_port));
 
-	send_packet(from, &destination, NULL);
+	send_packet(from, destination.sin_addr);
 
 	set_timeout_interval(client->interval, send_request);
 }
@@ -1435,11 +1421,9 @@ send_request(void)
 void
 send_decline(void)
 {
-	note("DHCPDECLINE on %s to %s port %hu", ifi->name,
-	    inet_ntoa(sockaddr_broadcast.sin_addr),
-	    ntohs(sockaddr_broadcast.sin_port));
+	note("DHCPDECLINE on %s", ifi->name);
 
-	send_packet(inaddr_any, &sockaddr_broadcast, NULL);
+	send_packet(inaddr_any, inaddr_broadcast);
 }
 
 void
@@ -1906,45 +1890,6 @@ res_hnok(const char *name)
 	return (1);
 }
 
-char *
-option_as_string(unsigned int code, unsigned char *data, int len)
-{
-	static char optbuf[32768]; /* XXX */
-	char *op = optbuf;
-	int opleft = sizeof(optbuf);
-	unsigned char *dp = data;
-
-	if (code > 255)
-		error("option_as_string: bad code %u", code);
-
-	for (; dp < data + len; dp++) {
-		if (!isascii(*dp) || !isprint(*dp)) {
-			if (dp + 1 != data + len || *dp != 0) {
-				size_t oplen;
-				snprintf(op, opleft, "\\%03o", *dp);
-				oplen = strlen(op);
-				op += oplen;
-				opleft -= oplen;
-			}
-		} else if (*dp == '"' || *dp == '\'' || *dp == '$' ||
-		    *dp == '`' || *dp == '\\') {
-			*op++ = '\\';
-			*op++ = *dp;
-			opleft -= 2;
-		} else {
-			*op++ = *dp;
-			opleft--;
-		}
-	}
-	if (opleft < 1)
-		goto toobig;
-	*op = 0;
-	return optbuf;
-toobig:
-	warning("dhcp option too large");
-	return "<error>";
-}
-
 void
 fork_privchld(int fd, int fd2)
 {
@@ -2011,10 +1956,11 @@ fork_privchld(int fd, int fd2)
 	close(fd);
 
 	if (strlen(path_option_db)) {
-		rslt = unlink(path_option_db);
+		/* Truncate the file so monitoring process see exit. */
+		rslt = truncate(path_option_db, 0);
 		if (rslt == -1)
-			warning("Could not unlink '%s': %s",
-			    path_option_db, strerror(errno));
+			warning("Unable to truncate '%s': %s", path_option_db,
+			    strerror(errno));
 	}
 
 	/*

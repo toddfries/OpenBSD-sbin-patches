@@ -1,4 +1,4 @@
-/*	$OpenBSD: user.c,v 1.26 2013/03/21 18:45:58 deraadt Exp $	*/
+/*	$OpenBSD: user.c,v 1.35 2014/03/31 22:03:29 krw Exp $	*/
 
 /*
  * Copyright (c) 1997 Tobias Weingartner
@@ -27,23 +27,20 @@
 
 #include <sys/types.h>
 #include <sys/fcntl.h>
-#include <sys/stat.h>
 #include <sys/disklabel.h>
-#include <err.h>
-#include <errno.h>
-#include <util.h>
 #include <stdio.h>
-#include <unistd.h>
 #include <string.h>
-#include "user.h"
-#include "disk.h"
-#include "misc.h"
-#include "mbr.h"
-#include "cmd.h"
+#include <unistd.h>
 
+#include "disk.h"
+#include "part.h"
+#include "mbr.h"
+#include "misc.h"
+#include "cmd.h"
+#include "user.h"
 
 /* Our command table */
-static cmd_table_t cmd_table[] = {
+struct cmd cmd_table[] = {
 	{"help",   Xhelp,	"Command help list"},
 	{"manual", Xmanual,	"Show entire OpenBSD man page for fdisk"},
 	{"reinit", Xreinit,	"Re-initialize loaded MBR (to defaults)"},
@@ -62,9 +59,8 @@ static cmd_table_t cmd_table[] = {
 	{NULL,     NULL,	NULL}
 };
 
-
 int
-USER_init(disk_t *disk, mbr_t *tt, int preserve)
+USER_init(struct disk *disk, struct mbr *tt, int preserve)
 {
 	char *query;
 
@@ -85,29 +81,26 @@ USER_init(disk_t *disk, mbr_t *tt, int preserve)
 int modified;
 
 int
-USER_modify(disk_t *disk, mbr_t *tt, off_t offset, off_t reloff)
+USER_modify(struct disk *disk, struct mbr *tt, off_t offset, off_t reloff)
 {
 	static int editlevel;
-	char mbr_buf[DEV_BSIZE];
-	mbr_t mbr;
-	cmd_t cmd;
+	struct dos_mbr dos_mbr;
+	struct mbr mbr;
+	char *cmd, *args;
 	int i, st, fd, error;
 
 	/* One level deeper */
 	editlevel += 1;
 
-	/* Set up command table pointer */
-	cmd.table = cmd_table;
-
 	/* Read MBR & partition */
 	fd = DISK_open(disk->name, O_RDONLY);
-	error = MBR_read(fd, offset, mbr_buf);
+	error = MBR_read(fd, offset, &dos_mbr);
 	close(fd);
 	if (error == -1)
 		goto done;
 
 	/* Parse the sucker */
-	MBR_parse(disk, mbr_buf, offset, reloff, &mbr);
+	MBR_parse(disk, &dos_mbr, offset, reloff, &mbr);
 
 	printf("Enter 'help' for information\n");
 
@@ -116,27 +109,26 @@ USER_modify(disk_t *disk, mbr_t *tt, off_t offset, off_t reloff)
 again:
 		printf("fdisk:%c%d> ", (modified)?'*':' ', editlevel);
 		fflush(stdout);
-		ask_cmd(&cmd);
+		ask_cmd(&cmd, &args);
 
-		if (cmd.cmd[0] == '\0')
+		if (cmd[0] == '\0')
 			goto again;
 		for (i = 0; cmd_table[i].cmd != NULL; i++)
-			if (strstr(cmd_table[i].cmd, cmd.cmd)==cmd_table[i].cmd)
+			if (strstr(cmd_table[i].cmd, cmd) == cmd_table[i].cmd)
 				break;
 
 		/* Quick hack to put in '?' == 'help' */
-		if (!strcmp(cmd.cmd, "?"))
+		if (!strcmp(cmd, "?"))
 			i = 0;
 
 		/* Check for valid command */
 		if (cmd_table[i].cmd == NULL) {
-			printf("Invalid command '%s'.  Try 'help'.\n", cmd.cmd);
+			printf("Invalid command '%s'.  Try 'help'.\n", cmd);
 			continue;
-		} else
-			strlcpy(cmd.cmd, cmd_table[i].cmd, sizeof cmd.cmd);
+		}
 
 		/* Call function */
-		st = cmd_table[i].fcn(&cmd, disk, &mbr, tt, offset);
+		st = cmd_table[i].fcn(args, disk, &mbr, tt, offset);
 
 		/* Update status */
 		if (st == CMD_EXIT)
@@ -167,23 +159,23 @@ done:
 }
 
 int
-USER_print_disk(disk_t *disk)
+USER_print_disk(struct disk *disk)
 {
 	off_t offset, firstoff;
 	int fd, i, error;
-	char mbr_buf[DEV_BSIZE];
-	mbr_t mbr;
+	struct dos_mbr dos_mbr;
+	struct mbr mbr;
 
 	fd = DISK_open(disk->name, O_RDONLY);
 	offset = firstoff = 0;
 
-	DISK_printmetrics(disk, NULL);
+	DISK_printgeometry(disk, NULL);
 
 	do {
-		error = MBR_read(fd, offset, mbr_buf);
+		error = MBR_read(fd, offset, &dos_mbr);
 		if (error == -1)
 			break;
-		MBR_parse(disk, mbr_buf, offset, firstoff, &mbr);
+		MBR_parse(disk, &dos_mbr, offset, firstoff, &mbr);
 
 		printf("Offset: %lld\t", offset);
 		MBR_print(&mbr, NULL);
@@ -200,4 +192,3 @@ USER_print_disk(disk_t *disk)
 
 	return (close(fd));
 }
-

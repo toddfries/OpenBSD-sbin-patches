@@ -1,4 +1,4 @@
-/*	$OpenBSD: ikev2.c,v 1.97 2014/02/26 14:09:15 markus Exp $	*/
+/*	$OpenBSD: ikev2.c,v 1.102 2014/04/29 11:51:13 markus Exp $	*/
 
 /*
  * Copyright (c) 2010-2013 Reyk Floeter <reyk@openbsd.org>
@@ -238,7 +238,7 @@ ikev2_dispatch_cert(int fd, struct privsep_proc *p, struct imsg *imsg)
 
 		if (imsg->hdr.type == IMSG_CERTVALID) {
 			log_debug("%s: peer certificate is valid", __func__);
-			sa_stateflags(sa, IKED_REQ_VALID);
+			sa_stateflags(sa, IKED_REQ_CERTVALID);
 			sa_state(env, sa, IKEV2_STATE_VALID);
 		} else {
 			log_warnx("%s: peer certificate is invalid", __func__);
@@ -284,7 +284,7 @@ ikev2_dispatch_cert(int fd, struct privsep_proc *p, struct imsg *imsg)
 			    __func__);
 			break;
 		}
-		
+
 		sa_stateflags(sa, IKED_REQ_CERT);
 
 		if (ikev2_ike_auth(env, sa, NULL) != 0)
@@ -294,6 +294,11 @@ ikev2_dispatch_cert(int fd, struct privsep_proc *p, struct imsg *imsg)
 		if ((sa = ikev2_getimsgdata(env, imsg,
 		    &sh, &type, &ptr, &len)) == NULL) {
 			log_debug("%s: invalid auth reply", __func__);
+			break;
+		}
+		if (sa_stateok(sa, IKEV2_STATE_VALID)) {
+			log_warnx("%s: ignoring AUTH in state %s", __func__,
+			    print_map(sa->sa_state, ikev2_state_map));
 			break;
 		}
 
@@ -314,6 +319,8 @@ ikev2_dispatch_cert(int fd, struct privsep_proc *p, struct imsg *imsg)
 		}
 
 		sa_stateflags(sa, IKED_REQ_AUTH);
+		/* Switch in case we already have certvalid or authvalid */
+		sa_state(env, sa, IKEV2_STATE_VALID);
 
 		if (ikev2_ike_auth(env, sa, NULL) != 0)
 			log_debug("%s: failed to send ike auth", __func__);
@@ -370,7 +377,7 @@ ikev2_recv(struct iked *env, struct iked_message *msg)
 
 	hdr = ibuf_seek(msg->msg_data, msg->msg_offset, sizeof(*hdr));
 
-	if (hdr == NULL || (ssize_t)ibuf_size(msg->msg_data) <
+	if (hdr == NULL || ibuf_size(msg->msg_data) <
 	    (betoh32(hdr->ike_length) - msg->msg_offset))
 		return;
 
@@ -523,15 +530,17 @@ ikev2_ike_auth(struct iked *env, struct iked_sa *sa,
 		memcpy(id, &msg->msg_id, sizeof(*id));
 		bzero(&msg->msg_id, sizeof(msg->msg_id));
 
-		if ((authmsg = ikev2_msg_auth(env, sa,
-		    !sa->sa_hdr.sh_initiator)) == NULL) {
-			log_debug("%s: failed to get response "
-			    "auth data", __func__);
-			return (-1);
-		}
+		if (!sa->sa_hdr.sh_initiator) {
+			if ((authmsg = ikev2_msg_auth(env, sa,
+			    !sa->sa_hdr.sh_initiator)) == NULL) {
+				log_debug("%s: failed to get response "
+				    "auth data", __func__);
+				return (-1);
+			}
 
-		ca_setauth(env, sa, authmsg, PROC_CERT);
-		ibuf_release(authmsg);
+			ca_setauth(env, sa, authmsg, PROC_CERT);
+			ibuf_release(authmsg);
+		}
 	}
 
 	if (msg->msg_cert.id_type) {
@@ -578,8 +587,10 @@ ikev2_ike_auth(struct iked *env, struct iked_sa *sa,
 		    authmsg);
 		ibuf_release(authmsg);
 
-		if (ret != 0)
-			goto done;
+		if (ret != 0) {
+			log_debug("%s: ikev2_msg_authverify failed", __func__);
+			return (-1);
+		}
 
 		if (sa->sa_eapmsk != NULL) {
 			if ((authmsg = ikev2_msg_auth(env, sa,
@@ -598,6 +609,10 @@ ikev2_ike_auth(struct iked *env, struct iked_sa *sa,
 				return (-1);
 			}
 
+			/* ikev2_msg_authverify verified AUTH */
+			sa_stateflags(sa, IKED_REQ_AUTHVALID);
+			sa_stateflags(sa, IKED_REQ_EAPVALID);
+
 			sa_state(env, sa, IKEV2_STATE_EAP_VALID);
 		}
 	}
@@ -611,7 +626,6 @@ ikev2_ike_auth(struct iked *env, struct iked_sa *sa,
 		} else
 			sa_stateflags(sa, IKED_REQ_SA);
 	}
-
  done:
 	if (sa->sa_hdr.sh_initiator) {
 		if (sa_stateok(sa, IKEV2_STATE_AUTH_SUCCESS))
@@ -4395,11 +4409,6 @@ ikev2_drop_sa(struct iked *env, struct iked_spi *drop)
 		return;
 	}
 
-	if ((buf = ibuf_static()) == NULL)
-		goto done;
-	if ((del = ibuf_advance(buf, sizeof(*del))) == NULL)
-		goto done;
-
 	if (csa->csa_allocated)
 		spi32 = htobe32(csa->csa_spi.spi);
 	else
@@ -4562,7 +4571,7 @@ ikev2_cp_setaddr(struct iked *env, struct iked_sa *sa)
 			break;
 		}
 	}
-	if (ikecfg == NULL)
+	if (i == pol->pol_ncfg)
 		return (0);
 
 	/*

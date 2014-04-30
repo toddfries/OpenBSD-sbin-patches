@@ -1,4 +1,4 @@
-#	$OpenBSD: Makefile,v 1.54 2013/10/31 22:37:17 schwarze Exp $
+#	$OpenBSD: Makefile,v 1.56 2014/04/13 15:29:21 schwarze Exp $
 
 PROG=	disklabel
 SRCS=	disklabel.c dkcksum.c editor.c manual.c
@@ -17,7 +17,7 @@ manual.c:
 	echo '};'; echo 'const int manpage_sz = sizeof(manpage);') > manual.c
 .else
 disklabel.cat8:	disklabel.8
-	mandoc ${.ALLSRC} > ${.TARGET}
+	mandoc -Tascii ${.ALLSRC} > ${.TARGET}
 
 manual.c:	disklabel.cat8
 	(echo 'const unsigned char manpage[] = {'; \
@@ -37,8 +37,7 @@ CFLAGS+= -DSEEALSO="\"fdisk(8), installboot(8)\""
 CFLAGS+= -DSEEALSO="\"fdisk(8)\""
 .endif
 
-.if (${MACHINE} == "hp300") || (${MACHINE} == "hppa") || \
-    (${MACHINE} == "hppa64") || (${MACHINE} == "vax")
+.if (${MACHINE} == "hppa") || (${MACHINE} == "hppa64") || (${MACHINE} == "vax")
 CFLAGS+= -DNUMBOOT=1
 .endif
 
@@ -49,10 +48,6 @@ CFLAGS+= -DSEEALSO="\"fdisk(8)\""
 
 .if (${MACHINE} == "macppc" || ${MACHINE} == "socppc")
 CFLAGS+= -DSEEALSO="\"fdisk(8), pdisk(8)\""
-.endif
-
-.if (${MACHINE} == "mvme68k") || (${MACHINE} == "mvme88k")
-CFLAGS+= -DSEEALSO="\"installboot(8)\""
 .endif
 
 .if (${MACHINE} == "solbourne") || (${MACHINE} == "sparc") || \

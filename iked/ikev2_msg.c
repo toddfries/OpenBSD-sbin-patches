@@ -1,4 +1,4 @@
-/*	$OpenBSD: ikev2_msg.c,v 1.29 2014/02/17 11:00:14 reyk Exp $	*/
+/*	$OpenBSD: ikev2_msg.c,v 1.32 2014/04/29 11:51:13 markus Exp $	*/
 
 /*
  * Copyright (c) 2010-2013 Reyk Floeter <reyk@openbsd.org>
@@ -97,8 +97,8 @@ ikev2_msg_cb(int fd, short event, void *arg)
 		iov[1].iov_base = buf;
 		iov[1].iov_len = len;
 
-		proc_composev_imsg(env, PROC_IKEV1, IMSG_IKE_MESSAGE, -1,
-		    iov, 2);
+		proc_composev_imsg(&env->sc_ps, PROC_IKEV1, -1,
+		    IMSG_IKE_MESSAGE, -1, iov, 2);
 		goto done;
 	}
 	TAILQ_INIT(&msg.msg_proposals);
@@ -135,11 +135,14 @@ ikev2_msg_copy(struct iked *env, struct iked_message *msg)
 {
 	struct iked_message		*m = NULL;
 	struct ibuf			*buf;
-	ssize_t				 len;
+	size_t				 len;
 	void				*ptr;
 
-	if ((len = ibuf_size(msg->msg_data) - msg->msg_offset) <= 0 ||
-	    (ptr = ibuf_seek(msg->msg_data, msg->msg_offset, len)) == NULL ||
+	if (ibuf_size(msg->msg_data) < msg->msg_offset)
+		return (NULL);
+	len = ibuf_size(msg->msg_data) - msg->msg_offset;
+
+	if ((ptr = ibuf_seek(msg->msg_data, msg->msg_offset, len)) == NULL ||
 	    (m = malloc(sizeof(*m))) == NULL ||
 	    (buf = ikev2_msg_init(env, m, &msg->msg_peer, msg->msg_peerlen,
 	     &msg->msg_local, msg->msg_locallen, msg->msg_response)) == NULL ||
@@ -753,6 +756,7 @@ ikev2_msg_authverify(struct iked *env, struct iked_sa *sa,
 	if ((ret = dsa_verify_final(dsa, buf, len)) == 0) {
 		log_debug("%s: authentication successful", __func__);
 		sa_state(env, sa, IKEV2_STATE_AUTH_SUCCESS);
+		sa_stateflags(sa, IKED_REQ_AUTHVALID);
 
 		if (!sa->sa_policy->pol_auth.auth_eap &&
 		    auth->auth_method == IKEV2_AUTH_SHARED_KEY_MIC)
